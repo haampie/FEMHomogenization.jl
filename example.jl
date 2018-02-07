@@ -36,7 +36,7 @@ end
 Creates the connectivity graph from the triangles
 """
 function mesh_to_graph(m::Mesh)
-    c = GraphBuilder([[] for i = 1 : m.n])
+    c = GraphBuilder([Int[] for i = 1 : m.n])
 
     # Self loops for each node
     for i = 1 : m.n
@@ -89,7 +89,24 @@ function uniform_mesh(n::Int = 16)
         triangle += 1
     end
 
-    return Mesh(length(p), p, t)
+    # Create the graph by hand as well
+    edges = [Int[] for i = 1 : m.n]
+    for i = 1 : n + 1, j = 1 : n + 1
+        idx = (i - 1) * (n + 1) + j
+        neighbours = (idx - n - 1, idx - n, idx - 1, idx, idx + 1, idx + n, idx + n + 1)
+        coords = ((i - 1, j), (i - 1, j + 1), (i, j - 1), (i, j), (i, j + 1), (i + 1, j - 1), (i + 1, j))
+        
+        # Loop over all neighbours in sorted order and see
+        # if they are part of the domain. If so, add them
+        # to the graph
+        for (neighbour, (x, y)) in zip(neighbours, coords)
+            if 1 ≤ x ≤ n + 1 && 1 ≤ y ≤ n + 1
+                push!(edges[idx], neighbour)
+            end
+        end
+    end
+
+    return Mesh(length(p), p, t), Graph()
 end
 
 function build_linear_shape_funcs()
@@ -112,6 +129,11 @@ end
 
 integrate(g) = (g(0.5, 0) + g(0.5, 0.5) + g(0, 0.5)) / 6
 
+"""
+Builds the SparseMatrixCSC structure from the graph
+of the mesh. Initializes all `nzval`s with zero.
+The `nzval`s are set in the assembly phase.
+"""
 function coefficient_matrix_factory(g::Graph)
     nzval = zeros(g.n_edges)
     rowval = Vector{Int}(g.n_edges)
@@ -125,6 +147,15 @@ function coefficient_matrix_factory(g::Graph)
     end
 
     return SparseMatrixCSC(g.n_nodes, g.n_nodes, colptr, rowval, nzval)
+end
+
+"""
+Map an edge (from, to) to the index of the value in the
+sparse matrix
+"""
+@inline function edge_to_idx(A::SparseMatrixCSC, g::Graph, from, to)
+    offset = searchsortedfirst(g.edges[from], to)
+    return A.colptr[from] + offset - 1
 end
 
 """
@@ -154,9 +185,9 @@ function assemble(n::Int = 16)
         fill!(A_local, 0.0)
 
         # Transform the gradients
-        ∇ϕ = @SVector [invBk * ∇ϕs[i] for i = 1 : 3]
+        ∇ϕ = SVector(invBk * ∇ϕs[1], invBk * ∇ϕs[2], invBk * ∇ϕs[3])
 
-        # Compute a(ϕ_i, ϕ_j) with the quadrature scheme 
+        # Compute a(ϕ_i, ϕ_j) with the quadrature scheme in all points k
         # for all combinations of i and j in the support of the triangle
         for i = 1:3, j = 1:3, k = 1:3
             A_local[i,j] += dot(∇ϕ[i], ∇ϕ[j]) + ϕs[i,k] * ϕs[j,k]
@@ -172,8 +203,8 @@ function assemble(n::Int = 16)
             # A[tn, tm] += A_local[n,m]
 
             # Fast variant
-            offset = searchsortedfirst(graph.edges[tn], tm)
-            A.nzval[A.colptr[tn] + offset - 1] += A_local[n,m]
+            idx = edge_to_idx(A, graph, tn, tm)
+            A.nzval[idx] += A_local[n,m]
         end
     end
 
