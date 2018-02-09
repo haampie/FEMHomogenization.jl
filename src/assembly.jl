@@ -125,6 +125,12 @@ function build_rhs(mesh::Mesh, graph::Graph, f::Function)
     b, bi
 end
 
+"""
+    checkerboard(m::Int)
+
+Returns a lambda function that maps a coordinate
+Coord(x, y) to a coefficient
+"""
 function checkerboard(m::Int)
     A = map(x -> x ? 9.0 : 1.0, rand(Bool, m+1, m+1))
 
@@ -136,6 +142,10 @@ function checkerboard(m::Int)
     end
 end
 
+"""
+For a fixed dimensionality of the problem, see 
+how λ changes the contraction factor.
+"""
 function example1(n = 16, c = 50)
     mesh = uniform_mesh(n)
     graph = mesh_to_graph(mesh)
@@ -192,6 +202,11 @@ function example1(n = 16, c = 50)
     return all_errors, λs
 end
 
+"""
+For a fixed λ and a fixed random checkerboard field for a(x),
+find the contraction factor as the dimension of the problem
+increases.
+"""
 function example2(c = 50, ns = 10 : 10 : 100, λ = 0.25)
     ρs = Float64[]
 
@@ -249,4 +264,9 @@ function example2(c = 50, ns = 10 : 10 : 100, λ = 0.25)
     end
     
     ns, ρs
+end
+
+
+function example3()
+
 end
