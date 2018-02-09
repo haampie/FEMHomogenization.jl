@@ -43,20 +43,13 @@ end
 """
 Assembles the coefficient matrix A
 """
-function assemble(f::Function, a11::Function, a22::Function, n::Int = 16)
+function build_matrix(mesh::Mesh, graph::Graph, a11::Function, a22::Function)
     # Quadrature scheme
     points = (Coord(0.0, 0.5), Coord(0.5, 0.0), Coord(0.5, 0.5))
     weights = (1/6, 1/6, 1/6)
-
-    # Get a mesh
-    mesh = uniform_mesh(n)
-    graph = mesh_to_graph(mesh)
     basis = build_linear_shape_funcs(points)
     A = coefficient_matrix_factory(graph)
-    b = zeros(mesh.n)
-
     A_local = zeros(3, 3)
-    b_local = zeros(3)
 
     # Loop over all triangles & compute local system matrix
     for triangle in mesh.triangles
@@ -64,32 +57,23 @@ function assemble(f::Function, a11::Function, a22::Function, n::Int = 16)
         coord_transform = [p2 - p1 p3 - p1]
         invBk = inv(coord_transform') 
 
-        # Reset local matrix and vector
+        # Reset local matrix
         fill!(A_local, 0.0)
-        fill!(b_local, 0.0)
 
         # Compute a(ϕ_i, ϕ_j) with the quadrature scheme in all points k
         # for all combinations of i and j in the support of the triangle
-        for i = 1:3 
-            for j = 1:3, k = 1:3
-                x = coord_transform * points[k] + p1
-                ∇ϕi = invBk * basis[i].∇ϕ[k]
-                ∇ϕj = invBk * basis[j].∇ϕ[k]
-                ϕi = basis[i].ϕ[k]
-                ϕj = basis[j].ϕ[k]
-                g = a11(x) * ∇ϕi[1] * ∇ϕj[1] + a22(x) * ∇ϕi[2] * ∇ϕj[2]
-                A_local[i,j] += weights[k] * g
-            end
-
-            for k = 1:3
-                x = coord_transform * points[k] + p1
-                b_local[i] += weights[k] * f(x) * basis[i].ϕ[k]
-            end
+        for i = 1:3, j = 1:3, k = 1:3
+            x = coord_transform * points[k] + p1
+            ∇ϕi = invBk * basis[i].∇ϕ[k]
+            ∇ϕj = invBk * basis[j].∇ϕ[k]
+            ϕi = basis[i].ϕ[k]
+            ϕj = basis[j].ϕ[k]
+            g = a11(x) * ∇ϕi[1] * ∇ϕj[1] + a22(x) * ∇ϕi[2] * ∇ϕj[2]
+            A_local[i,j] += weights[k] * g
         end
 
         Bk_det = abs(det(coord_transform))
         A_local .*= Bk_det
-        b_local .*= Bk_det
 
         # Put A_local into A
         for n = 1:3, m = 1:3
@@ -97,6 +81,37 @@ function assemble(f::Function, a11::Function, a22::Function, n::Int = 16)
             idx = edge_to_idx(A, graph, i, j)
             A.nzval[idx] += A_local[n,m]
         end
+    end
+
+    # Build the matrix for interior connections only
+    Ai = A[mesh.interior, mesh.interior]
+
+    A, Ai
+end
+
+function build_rhs(mesh::Mesh, graph::Graph, f::Function)
+    # Quadrature scheme
+    points = (Coord(0.0, 0.5), Coord(0.5, 0.0), Coord(0.5, 0.5))
+    weights = (1/6, 1/6, 1/6)
+    basis = build_linear_shape_funcs(points)
+    b_local = zeros(3)
+    b = zeros(mesh.n)
+
+    # Loop over all triangles & compute local rhs
+    for triangle in mesh.triangles
+        p1, p2, p3 = triangle_coords(mesh, triangle)
+        coord_transform = [p2 - p1 p3 - p1]
+        invBk = inv(coord_transform')
+
+        # Reset local vector
+        fill!(b_local, 0.0)
+
+        for i = 1:3, k = 1:3
+            x = coord_transform * points[k] + p1
+            b_local[i] += weights[k] * f(x) * basis[i].ϕ[k]
+        end
+
+        b_local .*= abs(det(coord_transform))
 
         # Put b_local in b
         for n = 1:3
@@ -105,10 +120,9 @@ function assemble(f::Function, a11::Function, a22::Function, n::Int = 16)
     end
 
     # Build the matrix for interior connections only
-    Ai = A[mesh.interior, mesh.interior]
     bi = b[mesh.interior]
 
-    A, b, Ai, bi, mesh, graph
+    b, bi
 end
 
 function checkerboard(m::Int)
@@ -122,15 +136,117 @@ function checkerboard(m::Int)
     end
 end
 
-function example(n = 16, c = 50)
-    a11 = checkerboard(c)
-    a22 = checkerboard(c)
-    f = (x::Coord) -> x[1] * x[2]
+function example1(n = 16, c = 50)
+    mesh = uniform_mesh(n)
+    graph = mesh_to_graph(mesh)
 
-    A, b, Ai, bi, mesh, graph = assemble(f, a11, a22, n)
+    _, A = build_matrix(mesh, graph, checkerboard(c), checkerboard(c))
+    _, Ā = build_matrix(mesh, graph, x::Coord -> 3.0, x::Coord -> 3.0)
+    _, b = build_rhs(mesh, graph, x::Coord -> x[1] * x[2])
+    
+    exact = A \ b
 
-    x = zeros(mesh.n)
-    x[mesh.interior] .= Ai \ bi
+    all_errors = []
+    λs = linspace(0.1, 1.0, 10)
 
-    x, f.(mesh.nodes)
+    for λ in λs
+        println(λ)
+
+        # Construct the shifted matrices
+        A_shift = A + λ^2 * I
+        Ā_shift = Ā + λ^2 * I
+
+        errors = Float64[]
+
+        # Start with a random v the size of b
+        v = rand(length(b))
+
+        for i = 1 : 3
+        
+            # Compute the residual
+            r = b - A * v
+
+            # Solve (λ² + A)u₀ = r
+            u₀ = A_shift \ r
+
+            # Solve (λ² + A)u₁ = λ²u₀
+            u₁ = A_shift \ (λ^2 .* u₀)
+
+            # Solve (λ² + Ā)ū₁ = λ²u₀
+            ū₁ = Ā_shift \ (λ^2 .* u₀)
+    
+            # Solve Āū = λ²ū₁
+            ū = Ā \ (λ^2 .* ū₁)
+
+            # Solve (λ² + A)ũ = (λ² + Ā)ū
+            ũ = A_shift \ (Ā_shift * ū)
+
+            v .+= u₀ .+ u₁ .+ ũ
+
+            push!(errors, norm(exact - v))
+        end
+
+        push!(all_errors, errors)
+    end
+
+    return all_errors, λs
+end
+
+function example2(c = 50, ns = 10 : 10 : 100, λ = 0.25)
+    ρs = Float64[]
+
+    for n = ns
+        @show n
+
+        mesh = uniform_mesh(n)
+        graph = mesh_to_graph(mesh)
+
+        _, A = build_matrix(mesh, graph, checkerboard(c), checkerboard(c))
+        _, Ā = build_matrix(mesh, graph, x::Coord -> 3.0, x::Coord -> 3.0)
+        _, b = build_rhs(mesh, graph, x::Coord -> x[1] * x[2])
+        
+        exact = A \ b
+
+        # Construct the shifted matrices
+        A_shift = A + λ^2 * I
+        Ā_shift = Ā + λ^2 * I
+
+        errors = Float64[]
+
+        # Start with a random v the size of b
+        v = rand(length(b))
+
+        for i = 1 : 3
+        
+            # Compute the residual
+            r = b - A * v
+
+            # Solve (λ² + A)u₀ = r
+            u₀ = A_shift \ r
+
+            # Solve (λ² + A)u₁ = λ²u₀
+            u₁ = A_shift \ (λ^2 .* u₀)
+
+            # Solve (λ² + Ā)ū₁ = λ²u₀
+            ū₁ = Ā_shift \ (λ^2 .* u₀)
+
+            # Solve Āū = λ²ū₁
+            ū = Ā \ (λ^2 .* ū₁)
+
+            # Solve (λ² + A)ũ = (λ² + Ā)ū
+            ũ = A_shift \ (Ā_shift * ū)
+
+            v .+= u₀ .+ u₁ .+ ũ
+
+            push!(errors, norm(exact - v))
+        end
+
+        contractions = errors[2 : end] ./ errors[1 : end - 1]
+
+        @show contractions
+
+        push!(ρs, last(contractions))
+    end
+    
+    ns, ρs
 end
