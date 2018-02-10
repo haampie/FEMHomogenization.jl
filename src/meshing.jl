@@ -54,6 +54,20 @@ struct GraphBuilder
     edges::Vector{Vector{Int}}
 end
 
+function remove_duplicates!(vec::Vector)
+    j = 1
+    @inbounds for i = 2 : length(vec)
+        if vec[i] != vec[j]
+            j += 1
+            vec[j] = vec[i]
+        end
+    end
+
+    resize!(vec, j)
+
+    vec
+end
+
 function add_edge!(c::GraphBuilder, i::Int, j::Int)
     if i == j
         push!(c.edges[i], i)
@@ -84,7 +98,7 @@ function mesh_to_graph(m::Mesh)
     # Remove duplicates
     n_edges = 0
     for i = 1 : m.n
-        c.edges[i] = sort!(unique(c.edges[i]))
+        remove_duplicates!(sort!(c.edges[i]))
         n_edges += length(c.edges[i])
     end
 
