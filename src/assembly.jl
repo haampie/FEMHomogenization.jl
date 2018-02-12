@@ -24,8 +24,8 @@ function coefficient_matrix_factory(g::Graph)
 
     edge_num = 1
     for i = 1 : g.n_nodes
-        colptr[i + 1] = colptr[i] + length(g.edges[i])
-        rowval[colptr[i] : colptr[i + 1] - 1] .= g.edges[i]
+        @inbounds colptr[i + 1] = colptr[i] + length(g.edges[i])
+        @inbounds rowval[colptr[i] : colptr[i + 1] - 1] .= g.edges[i]
     end
 
     return SparseMatrixCSC(g.n_nodes, g.n_nodes, colptr, rowval, nzval)
@@ -55,7 +55,7 @@ function build_matrix(mesh::Mesh, graph::Graph, a11::Function, a22::Function)
     for triangle in mesh.triangles
         p1, p2, p3 = triangle_coords(mesh, triangle)
         coord_transform = [p2 - p1 p3 - p1]
-        invBk = inv(coord_transform') 
+        invBk = inv(coord_transform')
 
         # Reset local matrix
         fill!(A_local, 0.0)
@@ -66,9 +66,8 @@ function build_matrix(mesh::Mesh, graph::Graph, a11::Function, a22::Function)
             x = coord_transform * points[k] + p1
             ∇ϕi = invBk * basis[i].∇ϕ[k]
             ∇ϕj = invBk * basis[j].∇ϕ[k]
-            ϕi = basis[i].ϕ[k]
-            ϕj = basis[j].ϕ[k]
             g = a11(x) * ∇ϕi[1] * ∇ϕj[1] + a22(x) * ∇ϕi[2] * ∇ϕj[2]
+
             A_local[i,j] += weights[k] * g
         end
 
@@ -142,6 +141,15 @@ function checkerboard(m::Int)
     end
 end
 
+# function build_integrand_evaluator(m::Int)
+#     a11 = checkerboard(m)
+#     a22 = checkerboard(m)
+
+#     return (u::BasisFunction, v::BasisFunction, x::Coord, B::SMatrix, k::Int) -> begin
+#         a11(x) * u.∇ϕ[k][1] * v.∇ϕ[k][1] + a22(x) * u.∇ϕ[k][2] * v.∇ϕ[k][2]
+#     end
+# end
+
 """
 For a fixed dimensionality of the problem, see 
 how λ changes the contraction factor.
@@ -203,35 +211,34 @@ function example1(n = 16, c = 50)
 end
 
 """
-For a fixed λ and a fixed random checkerboard field for a(x),
-find the contraction factor as the dimension of the problem
-increases.
+For a fixed λ and a fixed dimension of the problem
+find the contraction factor as the number of checkerboard
+cells increases.
 """
-function example2(c = 50, ns = 10 : 10 : 100, λ = 0.25)
-    ρs = Float64[]
+function example2(cs = 10 : 10 : 100, n = 255, λ = 0.25)
+    ρs = []
 
-    for n = ns
-        @show n
+    mesh = uniform_mesh(n)
+    graph = mesh_to_graph(mesh)
+    _, Ā = build_matrix(mesh, graph, x::Coord -> 3.0, x::Coord -> 3.0)
+    _, b = build_rhs(mesh, graph, x::Coord -> x[1] * x[2])
+    Ā_shift = Ā + λ^2 * I
 
-        mesh = uniform_mesh(n)
-        graph = mesh_to_graph(mesh)
+    for c = cs
+        @show c
 
         _, A = build_matrix(mesh, graph, checkerboard(c), checkerboard(c))
-        _, Ā = build_matrix(mesh, graph, x::Coord -> 3.0, x::Coord -> 3.0)
-        _, b = build_rhs(mesh, graph, x::Coord -> x[1] * x[2])
-        
         exact = A \ b
 
-        # Construct the shifted matrices
         A_shift = A + λ^2 * I
-        Ā_shift = Ā + λ^2 * I
 
         errors = Float64[]
 
         # Start with a random v the size of b
         v = rand(length(b))
 
-        for i = 1 : 3
+        for i = 1 : 10
+            @show i
         
             # Compute the residual
             r = b - A * v
@@ -260,13 +267,15 @@ function example2(c = 50, ns = 10 : 10 : 100, λ = 0.25)
 
         @show contractions
 
-        push!(ρs, last(contractions))
+        push!(ρs, errors)
     end
     
-    ns, ρs
+    cs, ρs
 end
 
 
-function example3()
-
+function example3(n::Int = 512)
+    mesh = uniform_mesh(n)
+    graph = mesh_to_graph(mesh)
+    build_matrix(mesh, graph, x::Coord -> 3.0, x::Coord -> 3.0)
 end

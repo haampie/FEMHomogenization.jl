@@ -1,6 +1,11 @@
-struct BasisFunction{points, dim}
+struct EvaluatedBasisFunctions{points, dim}
     ϕ::SVector{points, Float64}
     ∇ϕ::SVector{points, SVector{dim, Float64}}
+end
+
+struct EvaluatedBasisFunction{dim}
+    ϕ::Float64
+    ∇ϕ::SVector{dim, Float64}
 end
 
 function calculate_interpolation_polynomial_derivatives(ϕ; vars = (:x, :y))
@@ -35,5 +40,5 @@ function create_basis(xs::NTuple{n,Coord}, ϕ, ∇ϕ) where {n}
     ϕ_svec = SVector{n, Float64}(ϕ_values)
     ∇ϕ_svec = SVector{n, SVector{2, Float64}}([SVector{2, Float64}(∇ϕ_values[:, i]) for i = 1 : n]...)
     
-    return BasisFunction(ϕ_svec, ∇ϕ_svec)
+    return EvaluatedBasisFunctions(ϕ_svec, ∇ϕ_svec)
 end

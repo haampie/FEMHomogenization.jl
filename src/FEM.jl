@@ -21,6 +21,7 @@ struct Graph
     edges::Vector{Vector{Int}}
 end
 
+include("symbolic_basis_functions.jl")
 include("meshing.jl")
 include("basis_functions.jl")
 include("assembly.jl")
