@@ -2,8 +2,6 @@ module FEM
 using Calculus
 using StaticArrays
 
-export assemble
-
 const Coord{d} = SVector{d,Float64}
 
 struct Mesh{d,e}

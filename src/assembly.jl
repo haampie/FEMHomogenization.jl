@@ -38,18 +38,20 @@ end
 Assembles the coefficient matrix A
 """
 function build_matrix(mesh::Mesh, graph::Graph, bilinear_form::Function)
-
     # Quadrature scheme
     weights, quad_points = quadrature_rule(Tri3)
 
     # Reference basis functions
-    basis = element_basis(Tri, quad_points)
+    reference_bases = element_basis(Tri, quad_points)
 
     # This one will hold the transformed stuff
-    transformed_basis = deepcopy(basis)
+    transformed_bases = element_basis(Tri, quad_points)
+
+    # Number of nodes per element
+    nodes_per_element = length(reference_bases)
 
     A = coefficient_matrix_factory(graph)
-    A_local = zeros(3, 3)
+    A_local = zeros(nodes_per_element, nodes_per_element)
 
     # Loop over all elements & compute local system matrix
     for element in mesh.elements
@@ -59,22 +61,23 @@ function build_matrix(mesh::Mesh, graph::Graph, bilinear_form::Function)
         fill!(A_local, 0.0)
 
         # Transform the gradient
-        for i = 1 : length(basis)
-            A_mul_B!(transformed_basis[i].∇ϕ, jacInv, basis[i].∇ϕ)
+        for i = 1:nodes_per_element
+            A_mul_B!(transformed_bases[i].∇ϕ, jacInv, reference_bases[i].∇ϕ)
         end
 
         for (k, point) = enumerate(quad_points)
             x = jac * point + shift
 
-            for i = 1:3, j = 1:3
-                A_local[i,j] += weights[k] * bilinear_form(transformed_basis[i], transformed_basis[j], k, x)
+            for i = 1:nodes_per_element, j = 1:nodes_per_element
+                f = bilinear_form(transformed_bases[i], transformed_bases[j], k, x)
+                A_local[i,j] += weights[k] * f
             end
         end
 
         A_local .*= abs(det(jac))
 
         # Put A_local into A
-        for n = 1:3, m = 1:3
+        for n = 1:nodes_per_element, m = 1:nodes_per_element
             i, j = element[n], element[m]
             idx = edge_to_idx(A, graph, i, j)
             A.nzval[idx] += A_local[n,m]
@@ -82,46 +85,48 @@ function build_matrix(mesh::Mesh, graph::Graph, bilinear_form::Function)
     end
 
     # Build the matrix for interior connections only
-    Ai = A[mesh.interior, mesh.interior]
-
-    A, Ai
+    return A[mesh.interior, mesh.interior]
 end
 
-# function build_rhs(mesh::Mesh, graph::Graph, f::Function)
-#     # Quadrature scheme
-#     points = (Coord(0.0, 0.5), Coord(0.5, 0.0), Coord(0.5, 0.5))
-#     weights = (1/6, 1/6, 1/6)
-#     basis = build_linear_shape_funcs(points)
-#     b_local = zeros(3)
-#     b = zeros(mesh.n)
+function build_rhs(mesh::Mesh, graph::Graph, f::Function)
+    # Quadrature scheme
+    weights, quad_points = quadrature_rule(Tri3)
 
-#     # Loop over all triangles & compute local rhs
-#     for element in mesh.elements
-#         p1, p2, p3 = triangle_coords(mesh, element)
-#         coord_transform = [p2 - p1 p3 - p1]
-#         invBk = inv(coord_transform')
+    # Reference basis functions
+    reference_bases = element_basis(Tri, quad_points)
 
-#         # Reset local vector
-#         fill!(b_local, 0.0)
+    # Number of nodes per element
+    nodes_per_element = length(reference_bases)
 
-#         for i = 1:3, k = 1:3
-#             x = coord_transform * points[k] + p1
-#             b_local[i] += weights[k] * f(x) * basis[i].ϕ[k]
-#         end
+    b = zeros(mesh.n)
+    b_local = zeros(nodes_per_element)
 
-#         b_local .*= abs(det(coord_transform))
+    # Loop over all elements & compute local system matrix
+    for element in mesh.elements
+        jac, _, shift = jacobian(nodes(mesh, element)...)
 
-#         # Put b_local in b
-#         for n = 1:3
-#             b[triangle[n]] += b_local[n]
-#         end
-#     end
+        # Reset local matrix
+        fill!(b_local, 0.0)
 
-#     # Build the matrix for interior connections only
-#     bi = b[mesh.interior]
+        for (k, point) = enumerate(quad_points)
+            x = jac * point + shift
 
-#     b, bi
-# end
+            for i = 1:nodes_per_element
+                b_local[i] += weights[k] * f(x) * reference_bases[i].ϕ[k]
+            end
+        end
+
+        b_local .*= abs(det(jac))
+
+        # Put b_local into b
+        for n = 1:nodes_per_element
+            b[element[n]] += b_local[n]
+        end
+    end
+
+    # Build the matrix for interior connections only
+    return b[mesh.interior]
+end
 
 """
     checkerboard(m::Int)
@@ -263,10 +268,9 @@ function example2(cs = 10 : 10 : 100, n = 255, λ = 0.25)
     cs, ρs
 end
 
-
 function example3(n::Int = 512)
     mesh = uniform_mesh(n)
     graph = mesh_to_graph(mesh)
-    bilinear_form = (u, v, k, x) -> dot(u.∇ϕ[:,k], v.∇ϕ[:,k])
-    _, A = build_matrix(mesh, graph, bilinear_form)
+    bilinear_form = (u, v, k, x) -> u.ϕ[k] * v.ϕ[k]
+    return build_matrix(mesh, graph, bilinear_form)
 end
