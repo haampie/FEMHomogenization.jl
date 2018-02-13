@@ -1,17 +1,6 @@
 import Base.show
 
 """
-Create three shape functions on each
-vertex of a reference triangle
-"""
-function build_linear_shape_funcs(points::NTuple{n,Coord}) where {n}
-    ϕ1 = create_basis(points, :(1 - x - y))
-    ϕ2 = create_basis(points, :x)
-    ϕ3 = create_basis(points, :y)
-    return (ϕ1, ϕ2, ϕ3)
-end
-
-"""
 Builds the SparseMatrixCSC structure from the graph
 of the mesh. Initializes all `nzval`s with zero.
 The `nzval`s are set in the assembly phase.
@@ -40,43 +29,53 @@ sparse matrix
     return A.colptr[from] + offset - 1
 end
 
+function jacobian(p1, p2, p3)
+    jac = [p2 - p1 p3 - p1]
+    return jac, inv(jac'), p1
+end
+
 """
 Assembles the coefficient matrix A
 """
-function build_matrix(mesh::Mesh, graph::Graph, a11::Function, a22::Function)
+function build_matrix(mesh::Mesh, graph::Graph, bilinear_form::Function)
+
     # Quadrature scheme
-    points = (Coord(0.0, 0.5), Coord(0.5, 0.0), Coord(0.5, 0.5))
-    weights = (1/6, 1/6, 1/6)
-    basis = build_linear_shape_funcs(points)
+    weights, quad_points = quadrature_rule(Tri3)
+
+    # Reference basis functions
+    basis = element_basis(Tri, quad_points)
+
+    # This one will hold the transformed stuff
+    transformed_basis = deepcopy(basis)
+
     A = coefficient_matrix_factory(graph)
     A_local = zeros(3, 3)
 
-    # Loop over all triangles & compute local system matrix
-    for triangle in mesh.triangles
-        p1, p2, p3 = triangle_coords(mesh, triangle)
-        coord_transform = [p2 - p1 p3 - p1]
-        invBk = inv(coord_transform')
+    # Loop over all elements & compute local system matrix
+    for element in mesh.elements
+        jac, jacInv, shift = jacobian(nodes(mesh, element)...)
 
         # Reset local matrix
         fill!(A_local, 0.0)
 
-        # Compute a(ϕ_i, ϕ_j) with the quadrature scheme in all points k
-        # for all combinations of i and j in the support of the triangle
-        for i = 1:3, j = 1:3, k = 1:3
-            x = coord_transform * points[k] + p1
-            ∇ϕi = invBk * basis[i].∇ϕ[k]
-            ∇ϕj = invBk * basis[j].∇ϕ[k]
-            g = a11(x) * ∇ϕi[1] * ∇ϕj[1] + a22(x) * ∇ϕi[2] * ∇ϕj[2]
-
-            A_local[i,j] += weights[k] * g
+        # Transform the gradient
+        for i = 1 : length(basis)
+            A_mul_B!(transformed_basis[i].∇ϕ, jacInv, basis[i].∇ϕ)
         end
 
-        Bk_det = abs(det(coord_transform))
-        A_local .*= Bk_det
+        for (k, point) = enumerate(quad_points)
+            x = jac * point + shift
+
+            for i = 1:3, j = 1:3
+                A_local[i,j] += weights[k] * bilinear_form(transformed_basis[i], transformed_basis[j], k, x)
+            end
+        end
+
+        A_local .*= abs(det(jac))
 
         # Put A_local into A
         for n = 1:3, m = 1:3
-            i, j = triangle[n], triangle[m]
+            i, j = element[n], element[m]
             idx = edge_to_idx(A, graph, i, j)
             A.nzval[idx] += A_local[n,m]
         end
@@ -88,41 +87,41 @@ function build_matrix(mesh::Mesh, graph::Graph, a11::Function, a22::Function)
     A, Ai
 end
 
-function build_rhs(mesh::Mesh, graph::Graph, f::Function)
-    # Quadrature scheme
-    points = (Coord(0.0, 0.5), Coord(0.5, 0.0), Coord(0.5, 0.5))
-    weights = (1/6, 1/6, 1/6)
-    basis = build_linear_shape_funcs(points)
-    b_local = zeros(3)
-    b = zeros(mesh.n)
+# function build_rhs(mesh::Mesh, graph::Graph, f::Function)
+#     # Quadrature scheme
+#     points = (Coord(0.0, 0.5), Coord(0.5, 0.0), Coord(0.5, 0.5))
+#     weights = (1/6, 1/6, 1/6)
+#     basis = build_linear_shape_funcs(points)
+#     b_local = zeros(3)
+#     b = zeros(mesh.n)
 
-    # Loop over all triangles & compute local rhs
-    for triangle in mesh.triangles
-        p1, p2, p3 = triangle_coords(mesh, triangle)
-        coord_transform = [p2 - p1 p3 - p1]
-        invBk = inv(coord_transform')
+#     # Loop over all triangles & compute local rhs
+#     for element in mesh.elements
+#         p1, p2, p3 = triangle_coords(mesh, element)
+#         coord_transform = [p2 - p1 p3 - p1]
+#         invBk = inv(coord_transform')
 
-        # Reset local vector
-        fill!(b_local, 0.0)
+#         # Reset local vector
+#         fill!(b_local, 0.0)
 
-        for i = 1:3, k = 1:3
-            x = coord_transform * points[k] + p1
-            b_local[i] += weights[k] * f(x) * basis[i].ϕ[k]
-        end
+#         for i = 1:3, k = 1:3
+#             x = coord_transform * points[k] + p1
+#             b_local[i] += weights[k] * f(x) * basis[i].ϕ[k]
+#         end
 
-        b_local .*= abs(det(coord_transform))
+#         b_local .*= abs(det(coord_transform))
 
-        # Put b_local in b
-        for n = 1:3
-            b[triangle[n]] += b_local[n]
-        end
-    end
+#         # Put b_local in b
+#         for n = 1:3
+#             b[triangle[n]] += b_local[n]
+#         end
+#     end
 
-    # Build the matrix for interior connections only
-    bi = b[mesh.interior]
+#     # Build the matrix for interior connections only
+#     bi = b[mesh.interior]
 
-    b, bi
-end
+#     b, bi
+# end
 
 """
     checkerboard(m::Int)
@@ -140,15 +139,6 @@ function checkerboard(m::Int)
         return A[y_idx, x_idx]
     end
 end
-
-# function build_integrand_evaluator(m::Int)
-#     a11 = checkerboard(m)
-#     a22 = checkerboard(m)
-
-#     return (u::BasisFunction, v::BasisFunction, x::Coord, B::SMatrix, k::Int) -> begin
-#         a11(x) * u.∇ϕ[k][1] * v.∇ϕ[k][1] + a22(x) * u.∇ϕ[k][2] * v.∇ϕ[k][2]
-#     end
-# end
 
 """
 For a fixed dimensionality of the problem, see 
@@ -277,5 +267,6 @@ end
 function example3(n::Int = 512)
     mesh = uniform_mesh(n)
     graph = mesh_to_graph(mesh)
-    build_matrix(mesh, graph, x::Coord -> 3.0, x::Coord -> 3.0)
+    bilinear_form = (u, v, k, x) -> dot(u.∇ϕ[:,k], v.∇ϕ[:,k])
+    _, A = build_matrix(mesh, graph, bilinear_form)
 end

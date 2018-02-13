@@ -14,27 +14,11 @@ function test_basis_functions_on_nodes(ϕs, nodes, vars)
     end
 end
 
-@testset "Simplify functions" begin
-    @test FEM.simplify(:(1 + 0)) == :(1)
-    @test FEM.simplify(:(1 * 0)) == :(0)
-    @test FEM.simplify(:(1 * 1)) == :(1)
-    @test FEM.simplify(:(1 * 1 * 1)) == :(1)
-    @test FEM.simplify(:(0 + 0 + 0)) == :(0)
-    @test FEM.simplify(:(f(0 * x + 0))) == :(f(0))
-    @test FEM.simplify(:(0 * f(3))) == :(0)
-    @test FEM.simplify(:(-1 * x)) == :(-x)
-end
-
 @testset "Creating basis functions" begin
     @testset "2D example" begin
         nodes = ((0., 0.), (1., 0.), (0., 1.))
         vars = (:u, :v)
         ϕs = FEM.create_basis(:(1 + u + v), nodes, vars)
-
-        @test ϕs[1] == :(1 + -u + -v)
-        @test ϕs[2] == :u
-        @test ϕs[3] == :v
-
         test_basis_functions_on_nodes(ϕs, nodes, vars)
     end
 

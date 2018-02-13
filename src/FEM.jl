@@ -4,13 +4,12 @@ using StaticArrays
 
 export assemble
 
-const Coord = SVector{2, Float64}
-const Triangle = SVector{3, Int}
+const Coord{d} = SVector{d,Float64}
 
-struct Mesh
+struct Mesh{d,e}
     n::Int
-    nodes::Vector{Coord}
-    triangles::Vector{Triangle}
+    nodes::Vector{SVector{d,Float64}}
+    elements::Vector{SVector{e,Int}}
     boundary::Vector{Int}
     interior::Vector{Int}
 end
@@ -21,9 +20,10 @@ struct Graph
     edges::Vector{Vector{Int}}
 end
 
-include("symbolic_basis_functions.jl")
+# include("symbolic_basis_functions.jl")
+include("quadrature.jl")
+include("elements.jl")
 include("meshing.jl")
-include("basis_functions.jl")
 include("assembly.jl")
 
 end

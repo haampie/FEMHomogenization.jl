@@ -1,3 +1,5 @@
+const Triangle = SVector{3,Float64}
+
 """
 Creates a standard uniform mesh of the domain [0,1]
 with triangular elements
@@ -10,7 +12,7 @@ function uniform_mesh(n::Int = 16)
     total_boundary = 4n
     total_interior = total_nodes - total_boundary
 
-    nodes = Vector{Coord}(total_nodes)
+    nodes = Vector{Coord{2}}(total_nodes)
     triangles = Vector{Triangle}(total_triangles)
     boundary_nodes = Vector{Int}(total_boundary)
     interior_nodes = Vector{Int}(total_interior)
@@ -19,7 +21,7 @@ function uniform_mesh(n::Int = 16)
     idx_ext, idx_int = 1, 1
     for i = 1 : n + 1, j = 1 : n + 1
         idx = (i - 1) * (n + 1) + j
-        nodes[idx] = Coord(xs[j], xs[i])
+        nodes[idx] = Coord{2}(xs[j], xs[i])
 
         # On the edge?
         if i == 1 || i == n + 1 || j == 1 || j == n + 1
@@ -45,10 +47,16 @@ function uniform_mesh(n::Int = 16)
         triangle += 1
     end
 
-    return Mesh(total_nodes, nodes, triangles, boundary_nodes, interior_nodes)
+    return Mesh{2,3}(total_nodes, nodes, triangles, boundary_nodes, interior_nodes)
 end
 
-@inline triangle_coords(m::Mesh, t::Triangle) = m.nodes[t[1]], m.nodes[t[2]], m.nodes[t[3]]
+@inline function nodes(m::Mesh, element::SVector{3})
+    m.nodes[element[1]], m.nodes[element[2]], m.nodes[element[3]]
+end
+
+@inline function nodes(m::Mesh, element::SVector{4})
+    m.nodes[element[1]], m.nodes[element[2]], m.nodes[element[3]], m.nodes[element[4]]
+end
 
 struct GraphBuilder
     edges::Vector{Vector{Int}}
@@ -89,7 +97,7 @@ function mesh_to_graph(m::Mesh)
     end
 
     # Edges of all triangles
-    for t in m.triangles
+    for t in m.elements
         add_edge!(c, t[1], t[2])
         add_edge!(c, t[2], t[3])
         add_edge!(c, t[1], t[3])
