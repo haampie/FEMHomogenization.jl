@@ -1,5 +1,5 @@
 using FEM
 
-FEM.example4()
+FEM.example3()
 Profile.clear()
-FEM.example4()
+FEM.example3()

@@ -29,29 +29,55 @@ sparse matrix
     return A.colptr[from] + offset - 1
 end
 
+struct Function{d,T}
+    ϕ::T
+    grad::SVector{d,T}
+    ∇ϕ::MVector{d,T}
+
+    Function{d,T}(ϕ, grad, ∇ϕ) where {d,T} = new(ϕ, grad, ∇ϕ)
+end
+
+Function(ϕ::T, grad::SVector{d,T}) where {d,T} = Function{d,T}(ϕ, grad, zeros(MVector{d,T}))
+
 function jacobian(p1, p2, p3)
     jac = [p2 - p1 p3 - p1]
-    return jac, convert(Matrix, inv(jac')), p1
+    return jac, inv(jac'), p1
 end
 
 """
-Assembles the coefficient matrix A
+Evaluate ϕs and ∇ϕs in all quadrature points xs.
 """
-function build_matrix(mesh::Mesh, graph::Graph, bilinear_form::Function)
+function evaluate_basis_funcs(ϕs, ∇ϕs, xs)
+    d = 2
+    n = length(xs)
+    basis = Vector{Vector{Function{d,Float64}}}(n)
+
+    # Go over each quad point x
+    for (i, x) in enumerate(xs)
+        inner = Vector{Function{d,Float64}}(n)
+
+        # Evaluate ϕ and ∇ϕ in x
+        for (j, (ϕ, ∇ϕ)) in enumerate(zip(ϕs, ∇ϕs))
+            inner[j] = Function(ϕ(x), SVector(∇ϕ(x)))
+        end
+
+        basis[i] = inner
+    end
+
+    return basis
+end
+
+function build_matrix(mesh::Mesh, graph::Graph, bilinear_form)
     # Quadrature scheme
-    weights, quad_points = quadrature_rule(Tri3)
-
-    # Reference basis functions
-    reference_bases = element_basis(Tri, quad_points)
-
-    # This one will hold the transformed stuff
-    transformed_bases = element_basis(Tri, quad_points)
-
-    # Number of nodes per element
-    nodes_per_element = length(reference_bases)
+    ws, xs = quadrature_rule(Tri3)
+    ϕs, ∇ϕs = get_basis_funcs(Tri)
+    basis = evaluate_basis_funcs(ϕs, ∇ϕs, xs)
+    
+    # Nodes in each element
+    ns = length(first(mesh.elements))
 
     A = coefficient_matrix_factory(graph)
-    A_local = zeros(nodes_per_element, nodes_per_element)
+    A_local = zeros(MMatrix{ns,ns})
 
     # Loop over all elements & compute local system matrix
     for element in mesh.elements
@@ -61,27 +87,25 @@ function build_matrix(mesh::Mesh, graph::Graph, bilinear_form::Function)
         fill!(A_local, 0.0)
 
         # Transform the gradient
-        for i = 1:nodes_per_element
-            A_mul_B!(transformed_bases[i].∇ϕ, jacInv, reference_bases[i].∇ϕ)
+        for point in basis, f in point
+            A_mul_B!(f.∇ϕ, jacInv, f.grad)
         end
 
-        for (k, point) = enumerate(quad_points)
-            x = jac * point + shift
+        # For each quad point
+        @inbounds for k = 1 : length(xs)
+            x = jac * xs[k] + shift
 
-            for i = 1:nodes_per_element, j = 1:nodes_per_element
-                u = transformed_bases[i]
-                v = transformed_bases[j]
-                A_local[i,j] += weights[k] * bilinear_form(u, v, k, x)
+            for i = 1:ns, j = 1:ns
+                A_local[i,j] += ws[k] * bilinear_form(basis[k][i], basis[k][j], x)
             end
         end
 
         A_local .*= abs(det(jac))
 
         # Put A_local into A
-        for n = 1:nodes_per_element, m = 1:nodes_per_element
-            i, j = element[n], element[m]
-            idx = edge_to_idx(A, graph, i, j)
-            A.nzval[idx] += A_local[n,m]
+        @inbounds for i = 1:ns, j = 1:ns
+            idx = edge_to_idx(A, graph, element[i], element[j])
+            A.nzval[idx] += A_local[i,j]
         end
     end
 
@@ -89,18 +113,17 @@ function build_matrix(mesh::Mesh, graph::Graph, bilinear_form::Function)
     return A[mesh.interior, mesh.interior]
 end
 
-function build_rhs(mesh::Mesh, graph::Graph, f::Function)
+function build_rhs(mesh::Mesh, f)
     # Quadrature scheme
-    weights, quad_points = quadrature_rule(Tri3)
-
-    # Reference basis functions
-    bases = element_basis(Tri, quad_points)
-
-    # Number of nodes per element
-    nodes_per_element = length(bases)
+    ws, xs = quadrature_rule(Tri3)
+    ϕs, ∇ϕs = get_basis_funcs(Tri)
+    basis = evaluate_basis_funcs(ϕs, ∇ϕs, xs)
+    
+    # Nodes in each element
+    ns = length(first(mesh.elements))
 
     b = zeros(mesh.n)
-    b_local = zeros(nodes_per_element)
+    b_local = zeros(MVector{ns})
 
     # Loop over all elements & compute local system matrix
     for element in mesh.elements
@@ -109,19 +132,20 @@ function build_rhs(mesh::Mesh, graph::Graph, f::Function)
         # Reset local matrix
         fill!(b_local, 0.0)
 
-        for (k, point) = enumerate(quad_points)
-            x = jac * point + shift
+        # For each quad point
+        @inbounds for k = 1 : length(xs)
+            x = jac * xs[k] + shift
 
-            for i = 1:nodes_per_element
-                b_local[i] += weights[k] * f(x) * bases[i].ϕ[k]
+            for i = 1:ns
+                b_local[i] += ws[k] * f(x) * basis[k][i].ϕ
             end
         end
 
         b_local .*= abs(det(jac))
 
         # Put b_local into b
-        for n = 1:nodes_per_element
-            b[element[n]] += b_local[n]
+        @inbounds for i = 1:ns
+            b[element[i]] += b_local[i]
         end
     end
 
@@ -156,8 +180,8 @@ function example2(cells = 10 : 10 : 100, n = 513, λ = 0.25)
     mesh = uniform_mesh(n)
     graph = mesh_to_graph(mesh)
 
-    ā = (u, v, k, x) -> 3.0 * (u.∇ϕ[1,k] * v.∇ϕ[1,k] + u.∇ϕ[2,k] * v.∇ϕ[2,k])
-    m = (u, v, k, x) -> u.ϕ[k] * v.ϕ[k]
+    ā = (u, v, x) -> 3.0 * dot(u.∇ϕ, v.∇ϕ)
+    m = (u, v, x) -> u.ϕ * v.ϕ
 
     # Mass matrix
     M = build_matrix(mesh, graph, m)
@@ -177,13 +201,13 @@ function example2(cells = 10 : 10 : 100, n = 513, λ = 0.25)
         a22 = checkerboard(c)
 
         # Bilinear form (notice the 1 / r^2 bit)
-        a = (u, v, k, x) -> a11(x) * u.∇ϕ[1,k] * v.∇ϕ[1,k] + a22(x) * u.∇ϕ[2,k] * v.∇ϕ[2,k]
+        a = (u, v, x) -> a11(x) * u.∇ϕ[1] * v.∇ϕ[1] + a22(x) * u.∇ϕ[2] * v.∇ϕ[2]
 
         # Discretized differential operator
         A = build_matrix(mesh, graph, a)
         
         # Some right-hand side f(x,y) = 1 / xy
-        b = build_rhs(mesh, graph, x -> exp(-r^2*(x[1]^2 + x[2]^2)))
+        b = build_rhs(mesh, x -> exp(-r^2*(x[1]^2 + x[2]^2)))
 
         # Effective lambda parameter
         rλ_squared = (r * λ)^2
@@ -254,11 +278,11 @@ function show_updates(c = 40, n = 513, λ = 0.25)
     r = Float64(c)
 
     # Bilinear forms
-    ā = (u, v, k, x) -> 3.0 * (u.∇ϕ[1,k] * v.∇ϕ[1,k] + u.∇ϕ[2,k] * v.∇ϕ[2,k])
-    m = (u, v, k, x) -> u.ϕ[k] * v.ϕ[k]
     a11 = checkerboard(c)
     a22 = checkerboard(c)
-    a = (u, v, k, x) -> a11(x) * u.∇ϕ[1,k] * v.∇ϕ[1,k] + a22(x) * u.∇ϕ[2,k] * v.∇ϕ[2,k]
+    ā = (u, v, x) -> 3.0 * dot(u.∇ϕ, v.∇ϕ)
+    m = (u, v, x) -> u.ϕ * v.ϕ
+    a = (u, v, x) -> a11(x) * u.∇ϕ[1] * v.∇ϕ[1] + a22(x) * u.∇ϕ[2] * v.∇ϕ[2]
 
     # Mass matrix
     M = build_matrix(mesh, graph, m)
@@ -270,7 +294,7 @@ function show_updates(c = 40, n = 513, λ = 0.25)
     A = build_matrix(mesh, graph, a)
     
     # Some right-hand side f(x,y) = 1
-    b = build_rhs(mesh, graph, x -> 1.0)
+    b = build_rhs(mesh, x -> 1.0)
 
     # Effective lambda parameter
     rλ_squared = (r * λ)^2
@@ -336,7 +360,7 @@ end
 function example3(n::Int = 512)
     mesh = uniform_mesh(n)
     graph = mesh_to_graph(mesh)
-    bilinear_form = (u, v, k, x) -> u.ϕ[k] * v.ϕ[k]
+    bilinear_form = (u, v, x) -> u.ϕ * v.ϕ
     return build_matrix(mesh, graph, bilinear_form)
 end
 
@@ -347,9 +371,9 @@ function example4(n::Int = 512, c::Int = 10)
     a22 = checkerboard(c)
     λ = 0.25
 
-    B1 = (u, v, k, x) -> a11(x) * u.∇ϕ[1,k] * v.∇ϕ[1,k] + a22(x) * u.∇ϕ[2,k] * v.∇ϕ[2,k]
-    B2 = (u, v, k, x) -> 3.0 * (u.∇ϕ[1,k] * v.∇ϕ[1,k] + u.∇ϕ[2,k] * v.∇ϕ[2,k])
-    B3 = (u, v, k, x) -> u.ϕ[k] * v.ϕ[k]
+    B1 = (u, v, x) -> a11(x) * u.∇ϕ[1] * v.∇ϕ[1] + a22(x) * u.∇ϕ[2] * v.∇ϕ[2]
+    B2 = (u, v, x) -> 3.0 * dot(u.∇ϕ, v.∇ϕ)
+    B3 = (u, v, x) -> u.ϕ * v.ϕ
     f = x -> x[1] * x[2]
     
     # Differential operator
@@ -362,7 +386,7 @@ function example4(n::Int = 512, c::Int = 10)
     M = build_matrix(mesh, graph, B3)
 
     # Rhs
-    b = build_rhs(mesh, graph, f)
+    b = build_rhs(mesh, f)
 
     return A \ b, Ā \ b
 end
@@ -371,14 +395,14 @@ function example5(n::Int = 512, shift::Float64 = 1.0)
     mesh = uniform_mesh(n)
     graph = mesh_to_graph(mesh)
     
-    B = (u, v, k, x) -> u.∇ϕ[1,k] * v.∇ϕ[1,k] + u.∇ϕ[2,k] * v.∇ϕ[2,k] + shift * u.ϕ[k] * v.ϕ[k]
-    f = x -> x[1] * x[2]
+    B = (u, v, x) -> dot(u.∇ϕ, v.∇ϕ) + shift * u.ϕ * v.ϕ
+    f = x -> sqrt(x[1] * x[2])
     
     # Differential operator
     A = build_matrix(mesh, graph, B)
 
     # Rhs
-    b = build_rhs(mesh, graph, f)
+    b = build_rhs(mesh, f)
 
     return A \ b
 end
