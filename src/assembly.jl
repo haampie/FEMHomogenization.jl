@@ -39,9 +39,14 @@ end
 
 BasisFunction(ϕ::T, grad::SVector{d,T}) where {d,T} = BasisFunction{d,T}(ϕ, grad, zeros(MVector{d,T}))
 
-function affine_map(m::Mesh{Tri}, element)
-    p1, p2, p3 = m.nodes[element[1]], m.nodes[element[2]], m.nodes[element[3]]
+function affine_map(m::Mesh{Tri}, el)
+    p1, p2, p3 = m.nodes[el[1]], m.nodes[el[2]], m.nodes[el[3]]
     return [p2 - p1 p3 - p1], p1
+end
+
+function affine_map(m::Mesh{Tet}, el)
+    p1, p2, p3, p4 = m.nodes[el[1]], m.nodes[el[2]], m.nodes[el[3]], m.nodes[el[4]]
+    return [p2 - p1 p3 - p1 p4 - p1], p1
 end
 
 """
@@ -67,9 +72,12 @@ function evaluate_basis_funcs(ϕs, ∇ϕs, xs)
     return basis
 end
 
-function build_matrix(mesh::Mesh{elT}, graph::Graph, bilinear_form) where {elT}
+"""
+Build a sparse coefficient matrix for a given mesh and bilinear form
+"""
+function build_matrix(mesh::Mesh{elT}, graph::Graph, ::Type{quadT}, bilinear_form) where {elT<:MeshElement,quadT<:QuadRule}
     # Quadrature scheme
-    ws, xs = quadrature_rule(Tri3)
+    ws, xs = quadrature_rule(quadT)
     ϕs, ∇ϕs = get_basis_funcs(elT)
     basis = evaluate_basis_funcs(ϕs, ∇ϕs, xs)
     
@@ -114,16 +122,19 @@ function build_matrix(mesh::Mesh{elT}, graph::Graph, bilinear_form) where {elT}
     return A[mesh.interior, mesh.interior]
 end
 
-function build_rhs(mesh::Mesh{elT}, f) where {elT}
+"""
+Build a rhs vector for a given mesh and function f
+"""
+function build_rhs(mesh::Mesh{elT}, ::Type{quadT}, f) where {elT<:MeshElement,quadT<:QuadRule}
     # Quadrature scheme
-    ws, xs = quadrature_rule(Tri3)
+    ws, xs = quadrature_rule(quadT)
     ϕs, ∇ϕs = get_basis_funcs(elT)
     basis = evaluate_basis_funcs(ϕs, ∇ϕs, xs)
     
     # Nodes in each element
     ns = length(first(mesh.elements))
 
-    b = zeros(mesh.n)
+    b_global = zeros(mesh.n)
     b_local = zeros(MVector{ns})
 
     # Loop over all elements & compute local system matrix
@@ -151,5 +162,5 @@ function build_rhs(mesh::Mesh{elT}, f) where {elT}
     end
 
     # Build the matrix for interior connections only
-    return b[mesh.interior]
+    return b_global[mesh.interior]
 end

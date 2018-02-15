@@ -20,7 +20,7 @@ end
 For a fixed λ and a fixed dimension of the problem
 find the contraction factor as the size of the domain increases
 """
-function example2(cells = 10 : 10 : 100, n = 513, λ = 0.25)
+function example1(cells = 10 : 10 : 100, n = 513, λ = 0.25)
     ρs = []
 
     mesh = uniform_mesh(n)
@@ -30,10 +30,10 @@ function example2(cells = 10 : 10 : 100, n = 513, λ = 0.25)
     m = (u, v, x) -> u.ϕ * v.ϕ
 
     # Mass matrix
-    M = build_matrix(mesh, graph, m)
+    M = build_matrix(mesh, graph, Tri3, m)
 
     # Homogenized operator
-    Ā = build_matrix(mesh, graph, ā)
+    Ā = build_matrix(mesh, graph, Tri3, ā)
 
     for c = cells
 
@@ -50,10 +50,10 @@ function example2(cells = 10 : 10 : 100, n = 513, λ = 0.25)
         a = (u, v, x) -> a11(x) * u.∇ϕ[1] * v.∇ϕ[1] + a22(x) * u.∇ϕ[2] * v.∇ϕ[2]
 
         # Discretized differential operator
-        A = build_matrix(mesh, graph, a)
+        A = build_matrix(mesh, graph, Tri3, a)
         
         # Some right-hand side f(x,y) = 1 / xy
-        b = build_rhs(mesh, x -> exp(-r^2*(x[1]^2 + x[2]^2)))
+        b = build_rhs(mesh, Tri3, x -> exp(-r^2*(x[1]^2 + x[2]^2)))
 
         # Effective lambda parameter
         rλ_squared = (r * λ)^2
@@ -121,7 +121,7 @@ function example2(cells = 10 : 10 : 100, n = 513, λ = 0.25)
     cells, ρs
 end
 
-function show_updates(c = 40, n = 513, λ = 0.25)
+function example2(c = 40, n = 513, λ = 0.25)
     mesh = uniform_mesh(n)
     graph = mesh_to_graph(mesh)
 
@@ -137,16 +137,16 @@ function show_updates(c = 40, n = 513, λ = 0.25)
     f = x -> 1.0
 
     # Mass matrix
-    M = build_matrix(mesh, graph, m)
+    M = build_matrix(mesh, graph, Tri3, m)
 
     # Homogenized operator
-    Ā = build_matrix(mesh, graph, ā)
+    Ā = build_matrix(mesh, graph, Tri3, ā)
 
     # Discretized differential operator
-    A = build_matrix(mesh, graph, a)
+    A = build_matrix(mesh, graph, Tri3, a)
 
     # Some right-hand side f(x,y) = 1
-    b = build_rhs(mesh, f)
+    b = build_rhs(mesh, Tri3, f)
 
     # Effective lambda parameter
     rλ_squared = (r * λ)^2
@@ -218,7 +218,7 @@ function example3(n::Int = 512)
     mesh = uniform_mesh(n)
     graph = mesh_to_graph(mesh)
     bilinear_form = (u, v, x) -> dot(u.∇ϕ, v.∇ϕ) + u.ϕ * v.ϕ
-    return build_matrix(mesh, graph, bilinear_form)
+    return build_matrix(mesh, graph, Tri3, bilinear_form)
 end
 
 function example4(n::Int = 512, c::Int = 10)
@@ -234,16 +234,16 @@ function example4(n::Int = 512, c::Int = 10)
     f = x -> x[1] * x[2]
 
     # Differential operator
-    A = build_matrix(mesh, graph, B1)
+    A = build_matrix(mesh, graph, Tri3, B1)
 
     # Homogenized operator
-    Ā = build_matrix(mesh, graph, B2)
+    Ā = build_matrix(mesh, graph, Tri3, B2)
 
     # Mass matrix
-    M = build_matrix(mesh, graph, B3)
+    M = build_matrix(mesh, graph, Tri3, B3)
 
     # Rhs
-    b = build_rhs(mesh, f)
+    b = build_rhs(mesh, Tri3, f)
 
     return A \ b, Ā \ b
 end
@@ -256,10 +256,10 @@ function example5(n::Int = 512, shift::Float64 = 1.0)
     f = x -> sqrt(x[1] * x[2])
 
     # Differential operator
-    A = build_matrix(mesh, graph, B)
+    A = build_matrix(mesh, graph, Tri3, B)
 
     # Rhs
-    b = build_rhs(mesh, f)
+    b = build_rhs(mesh, Tri3, f)
 
     return A \ b
 end
