@@ -39,9 +39,9 @@ end
 
 BasisFunction(ϕ::T, grad::SVector{d,T}) where {d,T} = BasisFunction{d,T}(ϕ, grad, zeros(MVector{d,T}))
 
-function affine_map(p1, p2, p3)
-    jac = [p2 - p1 p3 - p1]
-    return jac, p1
+function affine_map(m::Mesh{Tri}, element)
+    p1, p2, p3 = m.nodes[element[1]], m.nodes[element[2]], m.nodes[element[3]]
+    return [p2 - p1 p3 - p1], p1
 end
 
 """
@@ -67,10 +67,10 @@ function evaluate_basis_funcs(ϕs, ∇ϕs, xs)
     return basis
 end
 
-function build_matrix(mesh::Mesh, graph::Graph, bilinear_form)
+function build_matrix(mesh::Mesh{elT}, graph::Graph, bilinear_form) where {elT}
     # Quadrature scheme
     ws, xs = quadrature_rule(Tri3)
-    ϕs, ∇ϕs = get_basis_funcs(Tri)
+    ϕs, ∇ϕs = get_basis_funcs(elT)
     basis = evaluate_basis_funcs(ϕs, ∇ϕs, xs)
     
     # Nodes in each element
@@ -81,7 +81,7 @@ function build_matrix(mesh::Mesh, graph::Graph, bilinear_form)
 
     # Loop over all elements & compute local system matrix
     for element in mesh.elements
-        jac, shift = affine_map(nodes(mesh, element)...)
+        jac, shift = affine_map(mesh, element)
         invJac = inv(jac')
 
         # Reset local matrix
@@ -114,10 +114,10 @@ function build_matrix(mesh::Mesh, graph::Graph, bilinear_form)
     return A[mesh.interior, mesh.interior]
 end
 
-function build_rhs(mesh::Mesh, f)
+function build_rhs(mesh::Mesh{elT}, f) where {elT}
     # Quadrature scheme
     ws, xs = quadrature_rule(Tri3)
-    ϕs, ∇ϕs = get_basis_funcs(Tri)
+    ϕs, ∇ϕs = get_basis_funcs(elT)
     basis = evaluate_basis_funcs(ϕs, ∇ϕs, xs)
     
     # Nodes in each element
@@ -128,7 +128,7 @@ function build_rhs(mesh::Mesh, f)
 
     # Loop over all elements & compute local system matrix
     for element in mesh.elements
-        jac, shift = affine_map(nodes(mesh, element)...)
+        jac, shift = affine_map(mesh, element)
 
         # Reset local matrix
         fill!(b_local, 0.0)

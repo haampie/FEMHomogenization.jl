@@ -47,15 +47,7 @@ function uniform_mesh(n::Int = 16)
         triangle += 1
     end
 
-    return Mesh{2,3}(total_nodes, nodes, triangles, boundary_nodes, interior_nodes)
-end
-
-@inline function nodes(m::Mesh, element::SVector{3})
-    m.nodes[element[1]], m.nodes[element[2]], m.nodes[element[3]]
-end
-
-@inline function nodes(m::Mesh, element::SVector{4})
-    m.nodes[element[1]], m.nodes[element[2]], m.nodes[element[3]], m.nodes[element[4]]
+    return Mesh{Tri,2,3}(total_nodes, nodes, triangles, boundary_nodes, interior_nodes)
 end
 
 struct GraphBuilder

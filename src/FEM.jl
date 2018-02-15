@@ -4,7 +4,7 @@ using StaticArrays
 
 const Coord{d} = SVector{d,Float64}
 
-struct Mesh{d,e}
+struct Mesh{elT,d,e}
     n::Int
     nodes::Vector{SVector{d,Float64}}
     elements::Vector{SVector{e,Int}}
