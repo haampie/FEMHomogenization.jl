@@ -23,5 +23,6 @@ include("quadrature.jl")
 include("elements.jl")
 include("meshing.jl")
 include("assembly.jl")
+include("examples.jl")
 
 end

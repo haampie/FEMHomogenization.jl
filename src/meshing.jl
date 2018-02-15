@@ -91,6 +91,10 @@ Creates the connectivity graph from the triangles
 function mesh_to_graph(m::Mesh)
     c = GraphBuilder([Int[] for i = 1 : m.n])
 
+    for node in c.edges
+        sizehint!(node, 7)
+    end
+
     # Self loops for each node
     for i = 1 : m.n
         add_edge!(c, i, i)
