@@ -29,15 +29,15 @@ sparse matrix
     return A.colptr[from] + offset - 1
 end
 
-struct Function{d,T}
+struct BasisFunction{d,T}
     ϕ::T
     grad::SVector{d,T}
     ∇ϕ::MVector{d,T}
 
-    Function{d,T}(ϕ, grad, ∇ϕ) where {d,T} = new(ϕ, grad, ∇ϕ)
+    BasisFunction{d,T}(ϕ, grad, ∇ϕ) where {d,T} = new(ϕ, grad, ∇ϕ)
 end
 
-Function(ϕ::T, grad::SVector{d,T}) where {d,T} = Function{d,T}(ϕ, grad, zeros(MVector{d,T}))
+BasisFunction(ϕ::T, grad::SVector{d,T}) where {d,T} = BasisFunction{d,T}(ϕ, grad, zeros(MVector{d,T}))
 
 function jacobian(p1, p2, p3)
     jac = [p2 - p1 p3 - p1]
@@ -50,15 +50,15 @@ Evaluate ϕs and ∇ϕs in all quadrature points xs.
 function evaluate_basis_funcs(ϕs, ∇ϕs, xs)
     d = 2
     n = length(xs)
-    basis = Vector{Vector{Function{d,Float64}}}(n)
+    basis = Vector{Vector{BasisFunction{d,Float64}}}(n)
 
     # Go over each quad point x
     for (i, x) in enumerate(xs)
-        inner = Vector{Function{d,Float64}}(n)
+        inner = Vector{BasisFunction{d,Float64}}(n)
 
         # Evaluate ϕ and ∇ϕ in x
         for (j, (ϕ, ∇ϕ)) in enumerate(zip(ϕs, ∇ϕs))
-            inner[j] = Function(ϕ(x), SVector(∇ϕ(x)))
+            inner[j] = BasisFunction(ϕ(x), SVector(∇ϕ(x)))
         end
 
         basis[i] = inner
