@@ -164,8 +164,12 @@ end
 Refine a grid a few times uniformly
 """
 function example(refinements = 9, ::Type{Ti} = Int32, ::Type{Tv} = Float64) where {Ti,Tv}
-    nodes = SVector{2,Tv}[(0.0, 0.0), (0.75, 0.0), (1.0, 1.0), (0.0, 1.0)]
-    triangles = SVector{3,Ti}[(1, 2, 3), (1, 4, 3)]
+    # nodes = SVector{2,Tv}[(0.0, 0.0), (0.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
+    # triangles = SVector{3,Ti}[(1, 2, 3), (1, 4, 3)]
+
+    nodes = SVector{2,Tv}[(1,0), (3,2), (1,2), (2,4), (0,4)]
+    triangles = SVector{3,Ti}[(1,2,3), (2,3,4), (3,4,5)]
+    
     graph = to_graph(nodes, triangles)
 
     for i = 1 : refinements
