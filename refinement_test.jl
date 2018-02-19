@@ -15,28 +15,14 @@ end
 
 sort(t::NTuple{2,T}) where {T} = t[1] < t[2] ? (t[1], t[2]) : (t[2], t[1])
 
-@inline isless(a::SVector, b::SVector) = a.data < b.data
-
-function init_tri(nodes::Vector{SVector{2,Tv}}, elements::Vector{SVector{3,Ti}}) where {Tv,Ti}
-    Nt = length(elements)
-
-    edges = Vector{SVector{2,Ti}}(3Nt)
-
-    # Put all edges in a list
-    idx = 1
-    for (from, to) in ((1, 2), (2, 3), (1, 3)), element in elements
-        edges[idx] = sort((element[from], element[to]))
-        idx += 1
+@inline function isless(a::SVector{2,T}, b::SVector{2,T}) where {T}
+    if a.data[1] < b.data[1]
+        return true
+    elseif a.data[1] > b.data[1]
+        return false
+    else
+        return a.data[2] < b.data[2]
     end
-
-    # Sort the edges and stuff
-    ordering = sort!([Pair(idx, edge) for (idx, edge) in enumerate(edges)], by = x -> x.second)
-    inv_perm = invperm([pair.first for pair in ordering])
-    sorted_edges = [pair.second for pair in ordering]
-
-    # Remove the duplicates
-
-    return inv_perm, sorted_edges, edges
 end
 
 """
@@ -94,7 +80,43 @@ function refine(nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}, 
         fine_triangles[idx + 3] = SVector(a   , b, c)
     end
 
-    fine_nodes, fine_triangles
+    # Interpolation operator
+    nzval = Vector{Tv}(Nn + 2Ne)
+
+    for i = 1 : Nn
+        nzval[i] = 1.0
+    end
+
+    for i = Nn + 1 : Nn + 2Ne
+        nzval[i] = 0.5
+    end
+
+    colptr = Vector{Ti}(Nn + Ne + 1)
+
+    for i = 1 : Nn + 1
+        colptr[i] = i
+    end
+
+    for i = Nn + 2 : Nn + Ne + 1
+        colptr[i] = 2 + colptr[i - 1]
+    end
+
+    rowval = Vector{Ti}(Nn + 2Ne)
+
+    for i = 1 : Nn
+        rowval[i] = i
+    end
+
+    idx = Nn + 1
+    for (from, edges) in enumerate(graph.edges), to in edges
+        rowval[idx] = from
+        rowval[idx + 1] = to
+        idx += 2
+    end
+
+    P = SparseMatrixCSC(Nn, Nn + Ne, colptr, rowval, nzval)
+
+    fine_nodes, fine_triangles, P
 end
 
 """
@@ -160,6 +182,35 @@ function to_graph(nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}
     return g
 end
 
+function matrix_type_graph(nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}) where {Tv,Ti}
+    Nn = length(nodes)
+    Nt = length(triangles)
+    edges = Vector{SVector{2,Ti}}(3Nt)
+    total = ones(Ti, Nn + 1)
+
+    for (i, t) in enumerate(triangles)
+        idx = 3i - 2
+        edges[idx + 0] = sort((t[1], t[2]))
+        edges[idx + 1] = sort((t[2], t[3]))
+        edges[idx + 2] = sort((t[3], t[1]))
+    end
+
+    remove_duplicates!(sort!(edges))
+
+    # Find the indices where new stuff starts
+    for j = 2 : length(edges)
+        if edges[j][1] != edges[j - 1][1]
+            total[edges[j][1]] = j
+        end
+
+        for i = edges[j - 1][1] + 1 : edges[j][1] - 1
+            total[i] = total[i - 1]
+        end
+    end
+
+    return edges, total
+end
+
 """
 Refine a grid a few times uniformly
 """
@@ -173,13 +224,23 @@ function example(refinements = 9, ::Type{Ti} = Int32, ::Type{Tv} = Float64) wher
     graph = to_graph(nodes, triangles)
 
     for i = 1 : refinements
-        @time begin
-            nodes, triangles = refine(nodes, triangles, graph)
-            graph = to_graph(nodes, triangles)
-        end
+        nodes, triangles, _ = refine(nodes, triangles, graph)
+        graph = to_graph(nodes, triangles)
     end
 
     nodes, triangles, graph
+end
+
+function example2(refinements = 9, ::Type{Ti} = Int32, ::Type{Tv} = Float64) where {Ti,Tv}
+    nodes = SVector{2,Tv}[(1,0), (3,2), (1,2), (2,4), (0,4)]
+    triangles = SVector{3,Ti}[(1,2,3), (2,3,4), (3,4,5)]
+    
+    for i = 1 : 3
+        graph = to_graph(nodes, triangles)
+        nodes, triangles = refine(nodes, triangles, graph)
+    end
+
+    return matrix_type_graph(nodes, triangles), to_graph(nodes, triangles)
 end
 
 function save_file(name::String, nodes, triangles, f)
