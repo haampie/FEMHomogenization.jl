@@ -67,13 +67,17 @@ function refine(nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}, 
 
         # Split the triangle in 4 pieces
         idx = 4i - 3
-        fine_triangles[idx    ] = SVector(t[1], a, c)
+        fine_triangles[idx + 0] = SVector(t[1], a, c)
         fine_triangles[idx + 1] = SVector(t[2], a, b)
         fine_triangles[idx + 2] = SVector(t[3], b, c)
         fine_triangles[idx + 3] = SVector(a   , b, c)
     end
 
     fine_nodes, fine_triangles
+end
+
+function contains_sorted(a::Vector{T}, x::T) where {T}
+    return searchsortedfirst(a, x) != length(a) + 1
 end
 
 """
@@ -129,12 +133,59 @@ function add_edge!(g::MyGraph{Ti}, from::Ti, to::Ti) where {Ti}
     push!(g.edges[from], to)
 end
 
+function sort_edges!(g::MyGraph)
+    for edges in g.edges
+        sort!(edges)
+    end
+end
+
+function collect_boundary_nodes!(g::MyGraph{Ti}, boundary_points::Vector{Ti}) where {Ti}
+    for (idx, edges) in enumerate(g.edges)
+        if collect_boundary_nodes!(edges, boundary_points)
+            push!(boundary_points, idx)
+        end
+    end
+end
+
+function collect_boundary_nodes!(vec::Vector{Ti}, boundary_points::Vector{Ti}) where {Ti}
+    Ne = length(vec)
+
+    if Ne == 0
+        return false
+    end
+
+    if Ne == 1
+        push!(boundary_points, vec[1])
+        return true
+    end
+
+    return_value = false
+
+    j = 1
+    @inbounds while j + 1 ≤ Ne
+        if vec[j] == vec[j + 1]
+            j += 2
+        else
+            return_value = true
+            push!(boundary_points, vec[j])
+            j += 1
+        end
+    end
+
+    if j == Ne
+        push!(boundary_points, vec[j])
+        return_value = true
+    end
+
+    return return_value
+end
+
 """
 Remove all duplicate edges
 """
 function remove_duplicates!(g::MyGraph)
     for adj in g.edges
-        remove_duplicates!(sort!(adj))
+        remove_duplicates!(adj)
     end
 
     g
@@ -175,13 +226,35 @@ function to_graph(nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}
         add_edge!(g, triangle[3], triangle[1])
     end
 
+    # Collect the boundary nodes
+    boundary_points = Vector{Ti}();
+    sort_edges!(g)
+    collect_boundary_nodes!(g, boundary_points)
     remove_duplicates!(g)
+    sort!(boundary_points)
+    remove_duplicates!(boundary_points)
+    interior_points = Vector{Ti}(n - length(boundary_points))
 
-    for i = 1 : n
+    num, idx = 1, 1
+    @inbounds for i in boundary_points
+        while num < i
+            interior_points[idx] = num
+            num += 1
+            idx += 1
+        end
+        num += 1
+    end
+
+    @inbounds for i = num : n
+        interior_points[idx] = i
+        idx += 1
+    end
+
+    @inbounds for i = 1 : n
         g.total[i + 1] = g.total[i] + length(g.edges[i])
     end
 
-    return g
+    return g, boundary_points, interior_points
 end
 
 function affine_map(nodes::Vector{SVector{2,Tv}}, el::SVector{3,Ti}) where {Tv,Ti}
@@ -254,11 +327,11 @@ Refine a grid a few times uniformly
 function refinement_example(refinements = 9, ::Type{Ti} = Int32, ::Type{Tv} = Float64) where {Ti,Tv}
     nodes = SVector{2,Tv}[(0, 0), (1, 0), (1, 1), (0, 1)]
     triangles = SVector{3,Ti}[(1, 2, 3), (1, 4, 3)]
-    graph = to_graph(nodes, triangles)
+    graph, boundary, interior = to_graph(nodes, triangles)
 
     for i = 1 : refinements
         nodes, triangles = refine(nodes, triangles, graph)
-        graph = to_graph(nodes, triangles)
+        graph, boundary, interior = to_graph(nodes, triangles)
     end
 
     return assemble_matrix(nodes, triangles, (u, v, x) -> dot(u.∇ϕ, v.∇ϕ))
