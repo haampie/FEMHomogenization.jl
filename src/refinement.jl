@@ -1,8 +1,3 @@
-module Refinement
-
-using StaticArrays
-using WriteVTK
-
 import Base.sort, Base.isless
 
 """
@@ -40,8 +35,6 @@ end
 """
 Uniformly refine a mesh of triangles: each triangle
 is split into four new triangles.
-
-TODO: pre-allocate a bunch of stuff!
 """
 function refine(nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}, graph::MyGraph{Ti}) where {Tv,Ti}
     Nn = length(nodes)
@@ -80,9 +73,22 @@ function refine(nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}, 
         fine_triangles[idx + 3] = SVector(a   , b, c)
     end
 
-    # Interpolation operator
-    nzval = Vector{Tv}(Nn + 2Ne)
+    fine_nodes, fine_triangles
+end
 
+"""
+Return the interpolation operator
+"""
+function interpolation_operator(nodes::Vector{SVector{2,Tv}}, graph::MyGraph{Ti}) where {Tv,Ti}
+    # Interpolation operator
+    Nn = length(graph.edges)
+    Ne = graph.total[end] - 1
+
+    nzval = Vector{Tv}(Nn + 2Ne)
+    colptr = Vector{Ti}(Nn + Ne + 1)
+    rowval = Vector{Ti}(Nn + 2Ne)
+
+    # Nonzero values
     for i = 1 : Nn
         nzval[i] = 1.0
     end
@@ -91,8 +97,7 @@ function refine(nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}, 
         nzval[i] = 0.5
     end
 
-    colptr = Vector{Ti}(Nn + Ne + 1)
-
+    # Column pointer
     for i = 1 : Nn + 1
         colptr[i] = i
     end
@@ -101,8 +106,7 @@ function refine(nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}, 
         colptr[i] = 2 + colptr[i - 1]
     end
 
-    rowval = Vector{Ti}(Nn + 2Ne)
-
+    # Row values
     for i = 1 : Nn
         rowval[i] = i
     end
@@ -114,20 +118,7 @@ function refine(nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}, 
         idx += 2
     end
 
-    P = SparseMatrixCSC(Nn, Nn + Ne, colptr, rowval, nzval)
-
-    fine_nodes, fine_triangles, P
-end
-
-"""
-Remove all duplicate edges
-"""
-function remove_duplicates!(g::MyGraph)
-    for (idx, adj) in enumerate(g.edges)
-        remove_duplicates!(sort!(adj))
-    end
-
-    g
+    return SparseMatrixCSC(Nn, Nn + Ne, colptr, rowval, nzval)
 end
 
 """
@@ -136,6 +127,17 @@ Add a new edge to a graph (this is slow / allocating)
 function add_edge!(g::MyGraph{Ti}, from::Ti, to::Ti) where {Ti}
     from, to = sort((from, to))
     push!(g.edges[from], to)
+end
+
+"""
+Remove all duplicate edges
+"""
+function remove_duplicates!(g::MyGraph)
+    for adj in g.edges
+        remove_duplicates!(sort!(adj))
+    end
+
+    g
 end
 
 """
@@ -163,7 +165,7 @@ Convert a mesh of nodes + triangles to a graph
 """
 function to_graph(nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}) where {Tv,Ti}
     n = length(nodes)
-    edges = [sizehint!(Ti[], 5)  for i = 1 : n]
+    edges = [sizehint!(Ti[], 5) for i = 1 : n]
     total = ones(Ti, n + 1)
     g = MyGraph(edges, total)
     
@@ -182,65 +184,84 @@ function to_graph(nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}
     return g
 end
 
-function matrix_type_graph(nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}) where {Tv,Ti}
+function affine_map(nodes::Vector{SVector{2,Tv}}, el::SVector{3,Ti}) where {Tv,Ti}
+    p1, p2, p3 = nodes[el[1]], nodes[el[2]], nodes[el[3]]
+    return [p2 - p1 p3 - p1], p1
+end
+
+"""
+Build a sparse coefficient matrix for a given mesh and bilinear form
+"""
+function assemble_matrix(nodes::Vector{SVector{2,Tv}}, elements::Vector{SVector{3,Ti}}, bilinear_form) where {Ti,Tv}
+    # Quadrature scheme
+    ws, xs = quadrature_rule(Tri3)
+    ϕs, ∇ϕs = get_basis_funcs(Tri)
+    basis = evaluate_basis_funcs(ϕs, ∇ϕs, xs)
+
+    Nt = length(elements)
     Nn = length(nodes)
-    Nt = length(triangles)
-    edges = Vector{SVector{2,Ti}}(3Nt)
-    total = ones(Ti, Nn + 1)
+    Nq = length(xs)
+    dof = 3
+    
+    # Some stuff
+    is = Vector{Ti}(dof * dof * Nt)
+    js = Vector{Ti}(dof * dof * Nt)
+    vs = Vector{Tv}(dof * dof * Nt)
 
-    for (i, t) in enumerate(triangles)
-        idx = 3i - 2
-        edges[idx + 0] = sort((t[1], t[2]))
-        edges[idx + 1] = sort((t[2], t[3]))
-        edges[idx + 2] = sort((t[3], t[1]))
-    end
+    A_local = zeros(dof, dof)
 
-    remove_duplicates!(sort!(edges))
+    idx = 1
 
-    # Find the indices where new stuff starts
-    for j = 2 : length(edges)
-        if edges[j][1] != edges[j - 1][1]
-            total[edges[j][1]] = j
+    # Loop over all elements & compute local system matrix
+    for element in elements
+        jac, shift = affine_map(nodes, element)
+        invJac = inv(jac')
+        detJac = abs(det(jac))
+
+        # Transform the gradient
+        @inbounds for point in basis, f in point
+            A_mul_B!(f.∇ϕ, invJac, f.grad)
         end
 
-        for i = edges[j - 1][1] + 1 : edges[j][1] - 1
-            total[i] = total[i - 1]
+        # Reset local matrix
+        fill!(A_local, zero(Tv))
+
+        # For each quad point
+        @inbounds for k = 1 : Nq
+            x = jac * xs[k] + shift
+
+            for i = 1:dof, j = 1:dof
+                A_local[i,j] += ws[k] * bilinear_form(basis[k][i], basis[k][j], x)
+            end
+        end
+
+        # Copy stuff
+        @inbounds for i = 1:dof, j = 1:dof
+            is[idx] = element[i]
+            js[idx] = element[j]
+            vs[idx] = A_local[i,j] * detJac
+            idx += 1
         end
     end
 
-    return edges, total
+    # Build the matrix for interior connections only
+    return dropzeros!(sparse(is, js, vs, Nn, Nn))
 end
 
 """
 Refine a grid a few times uniformly
 """
-function example(refinements = 9, ::Type{Ti} = Int32, ::Type{Tv} = Float64) where {Ti,Tv}
-    # nodes = SVector{2,Tv}[(0.0, 0.0), (0.0, 0.0), (1.0, 1.0), (0.0, 1.0)]
-    # triangles = SVector{3,Ti}[(1, 2, 3), (1, 4, 3)]
-
-    nodes = SVector{2,Tv}[(1,0), (3,2), (1,2), (2,4), (0,4)]
-    triangles = SVector{3,Ti}[(1,2,3), (2,3,4), (3,4,5)]
-    
+function refinement_example(refinements = 9, ::Type{Ti} = Int32, ::Type{Tv} = Float64) where {Ti,Tv}
+    nodes = SVector{2,Tv}[(0, 0), (1, 0), (1, 1), (0, 1)]
+    triangles = SVector{3,Ti}[(1, 2, 3), (1, 4, 3)]
     graph = to_graph(nodes, triangles)
 
     for i = 1 : refinements
-        nodes, triangles, _ = refine(nodes, triangles, graph)
-        graph = to_graph(nodes, triangles)
-    end
-
-    nodes, triangles, graph
-end
-
-function example2(refinements = 9, ::Type{Ti} = Int32, ::Type{Tv} = Float64) where {Ti,Tv}
-    nodes = SVector{2,Tv}[(1,0), (3,2), (1,2), (2,4), (0,4)]
-    triangles = SVector{3,Ti}[(1,2,3), (2,3,4), (3,4,5)]
-    
-    for i = 1 : 3
-        graph = to_graph(nodes, triangles)
         nodes, triangles = refine(nodes, triangles, graph)
+        graph = to_graph(nodes, triangles)
     end
 
-    return matrix_type_graph(nodes, triangles), to_graph(nodes, triangles)
+    return assemble_matrix(nodes, triangles, (u, v, x) -> dot(u.∇ϕ, v.∇ϕ))
 end
 
 function save_file(name::String, nodes, triangles, f)
@@ -249,6 +270,4 @@ function save_file(name::String, nodes, triangles, f)
     vtkfile = vtk_grid(name, node_matrix, triangle_stuff)
     vtk_point_data(vtkfile, f.(nodes), "f")
     vtk_save(vtkfile)
-end
-
 end

@@ -1,6 +1,8 @@
 module FEM
+
 using Calculus
 using StaticArrays
+using WriteVTK
 
 const Coord{d} = SVector{d,Float64}
 
@@ -18,11 +20,11 @@ struct Graph
     edges::Vector{Vector{Int}}
 end
 
-# include("symbolic_basis_functions.jl")
 include("quadrature.jl")
 include("elements.jl")
 include("meshing.jl")
 include("assembly.jl")
+include("refinement.jl")
 include("examples.jl")
 
 end
