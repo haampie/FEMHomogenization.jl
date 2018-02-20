@@ -248,78 +248,80 @@ function example4(n::Int = 512, c::Int = 10)
     return A \ b, Ā \ b
 end
 
-function example5(n::Int = 512, shift::Float64 = 1.0)
-    mesh = uniform_mesh(n)
-    graph = mesh_to_graph(mesh)
+function example5(refinements::Int = 6, shift::Float64 = 1.0)
+    nodes = SVector{2,Float64}[(0, 0), (1, 0), (1, 1), (0, 1)]
+    triangles = SVector{3,Int64}[(1, 2, 3), (1, 4, 3)]
+    mesh = Mesh(Tri, nodes, triangles)
+    graph, boundary, interior = to_graph(mesh)
+
+    for i = 1 : refinements
+        mesh = refine(mesh, graph)
+        graph, boundary, interior = to_graph(mesh)
+    end
 
     B = (u, v, x) -> dot(u.∇ϕ, v.∇ϕ) + shift * u.ϕ * v.ϕ
     f = x -> sqrt(x[1] * x[2])
 
-    # Differential operator
-    A = build_matrix(mesh, graph, Tri3, B)
+    A = assemble_matrix(mesh, (u, v, x) -> dot(u.∇ϕ, v.∇ϕ))
+    b = assemble_rhs(mesh, x -> sin(3x[1]) * cos(4x[2]))
+    x = zeros(b)
 
-    # Rhs
-    b = build_rhs(mesh, Tri3, f)
+    A_int = A[interior, interior]
+    b_int = b[interior]
 
-    return A \ b
+    x[interior] .= A_int \ b_int
+
+    return mesh, x
 end
 
 """
 Refine a grid a few times uniformly
 """
-function refinement_example(refinements = 10, ::Type{Ti} = Int32, ::Type{Tv} = Float64) where {Ti,Tv}
+function refinement_example(refinements::Int = 10, ::Type{Ti} = Int64, ::Type{Tv} = Float64) where {Ti,Tv}
     nodes = SVector{2,Tv}[(0, 0), (1, 0), (1, 1), (0, 1)]
     triangles = SVector{3,Ti}[(1, 2, 3), (1, 4, 3)]
-    graph, boundary, interior = to_graph(nodes, triangles)
+    mesh = Mesh(Tri, nodes, triangles)
+    graph, boundary, interior = to_graph(mesh)
 
     for i = 1 : refinements
-        nodes, triangles = refine(nodes, triangles, graph)
-        graph, boundary, interior = to_graph(nodes, triangles)
+        mesh = refine(mesh, graph)
+        graph, boundary, interior = to_graph(mesh)
     end
 
-    A = assemble_matrix(nodes, triangles, (u, v, x) -> dot(u.∇ϕ, v.∇ϕ))
-    b = assemble_rhs(nodes, triangles, x -> 1.0)
+    A = assemble_matrix(mesh, (u, v, x) -> dot(u.∇ϕ, v.∇ϕ))
+    b = assemble_rhs(mesh, x -> 1.0)
 
     return A, b, interior
 end
 
-"""
-A geometric level of the grid
-"""
-struct Level{Tv,Ti}
-    nodes::Vector{SVector{2,Tv}}
-    triangles::Vector{SVector{3,Ti}}
-    graph::MyGraph{Ti}
-    boundary::Vector{Ti}
-    interior::Vector{Ti}
-end
 
 function build_hierarchy(refinements::Int = 10, ::Type{Ti} = Int64, ::Type{Tv} = Float64) where {Ti,Tv}
     interpolation = Vector{SparseMatrixCSC{Tv,Ti}}(refinements - 1)
-    levels = Vector{Level{Tv,Ti}}(refinements)
+    levels = Vector{Level{Tri,Tv,Ti}}(refinements)
 
     # Initial mesh is 2 triangles in a square
     nodes = SVector{2,Tv}[(0, 0), (1, 0), (1, 1), (0, 1)]
     triangles = SVector{3,Ti}[(1, 2, 3), (1, 4, 3)]
-    graph, boundary, interior = to_graph(nodes, triangles)
-    levels[1] = Level(nodes, triangles, graph, boundary, interior)
+    mesh = Mesh(Tri, nodes, triangles)
+    graph, boundary, interior = to_graph(mesh)
+    levels[1] = Level(mesh, graph, boundary, interior)
 
     # Then we refine a couple times
     for i = 1 : refinements - 1
-        interpolation[i] = interpolation_operator(nodes, graph)
-        nodes, triangles = refine(nodes, triangles, graph)
-        graph, boundary, interior = to_graph(nodes, triangles)
-        levels[i + 1] = Level(nodes, triangles, graph, boundary, interior)
+        interpolation[i] = interpolation_operator(graph)
+        mesh = refine(mesh, graph)
+        graph, boundary, interior = to_graph(mesh)
+        levels[i + 1] = Level(mesh, graph, boundary, interior)
     end
 
     # Start with random values on the coarsest grid
     # and interpolate them to the finer grids.
-    vals = rand(length(levels[1].nodes))
-    save_file("grid_01", levels[1].nodes, levels[1].triangles, vals)
+    vals = rand(length(levels[1].mesh.nodes))
+    save_file("grid_01", levels[1].mesh, vals)
 
     for i = 2 : refinements
         vals = interpolation[i - 1]' * vals
         name = @sprintf "grid_%02d" i
-        save_file(name, levels[i].nodes, levels[i].triangles, vals)
+        save_file(name, levels[i].mesh, vals)
     end
 end

@@ -1,32 +1,10 @@
-import Base.show
-
 """
-Builds the SparseMatrixCSC structure from the graph
-of the mesh. Initializes all `nzval`s with zero.
-The `nzval`s are set in the assembly phase.
+Returns the affine map from the blueprint triangle to the given
+triangle.
 """
-function coefficient_matrix_factory(g::Graph)
-    nzval = zeros(g.n_edges)
-    rowval = Vector{Int}(g.n_edges)
-    colptr = Vector{Int}(g.n_nodes + 1)
-    colptr[1] = 1
-
-    edge_num = 1
-    for i = 1 : g.n_nodes
-        @inbounds colptr[i + 1] = colptr[i] + length(g.edges[i])
-        @inbounds rowval[colptr[i] : colptr[i + 1] - 1] .= g.edges[i]
-    end
-
-    return SparseMatrixCSC(g.n_nodes, g.n_nodes, colptr, rowval, nzval)
-end
-
-"""
-Map an edge (from, to) to the index of the value in the
-sparse matrix
-"""
-@inline function edge_to_idx(A::SparseMatrixCSC, g::Graph, from, to)
-    offset = searchsortedfirst(g.edges[from], to)
-    return A.colptr[from] + offset - 1
+function affine_map(m::Mesh{Tri,Ti,Tv}, el::SVector{3,Ti}) where {Tv,Ti}
+    p1, p2, p3 = m.nodes[el[1]], m.nodes[el[2]], m.nodes[el[3]]
+    return [p2 - p1 p3 - p1], p1
 end
 
 struct BasisFunction{d,T}
@@ -38,16 +16,6 @@ struct BasisFunction{d,T}
 end
 
 BasisFunction(ϕ::T, grad::SVector{d,T}) where {d,T} = BasisFunction{d,T}(ϕ, grad, zeros(MVector{d,T}))
-
-function affine_map(m::Mesh{Tri}, el)
-    p1, p2, p3 = m.nodes[el[1]], m.nodes[el[2]], m.nodes[el[3]]
-    return [p2 - p1 p3 - p1], p1
-end
-
-function affine_map(m::Mesh{Tet}, el)
-    p1, p2, p3, p4 = m.nodes[el[1]], m.nodes[el[2]], m.nodes[el[3]], m.nodes[el[4]]
-    return [p2 - p1 p3 - p1 p4 - p1], p1
-end
 
 """
 Evaluate ϕs and ∇ϕs in all quadrature points xs.
@@ -75,92 +43,101 @@ end
 """
 Build a sparse coefficient matrix for a given mesh and bilinear form
 """
-function build_matrix(mesh::Mesh{elT}, graph::Graph, ::Type{quadT}, bilinear_form) where {elT<:MeshElement,quadT<:QuadRule}
+function assemble_matrix(m::Mesh{Te,Ti,Tv}, bilinear_form) where {Te,Ti,Tv}
     # Quadrature scheme
-    ws, xs = quadrature_rule(quadT)
-    ϕs, ∇ϕs = get_basis_funcs(elT)
+    ϕs, ∇ϕs = get_basis_funcs(Te)
+    ws, xs = quadrature_rule(Tri3)
     basis = evaluate_basis_funcs(ϕs, ∇ϕs, xs)
-    
-    # Nodes in each element
-    ns = length(first(mesh.elements))
 
-    A = coefficient_matrix_factory(graph)
-    A_local = zeros(MMatrix{ns,ns})
+    Nt = length(m.triangles)
+    Nn = length(m.nodes)
+    Nq = length(xs)
+    dof = 3
+    
+    # Some stuff
+    is = Vector{Ti}(dof * dof * Nt)
+    js = Vector{Ti}(dof * dof * Nt)
+    vs = Vector{Tv}(dof * dof * Nt)
+
+    A_local = zeros(dof, dof)
+
+    idx = 1
 
     # Loop over all elements & compute local system matrix
-    for element in mesh.elements
-        jac, shift = affine_map(mesh, element)
+    for triangle in m.triangles
+        jac, shift = affine_map(m, triangle)
         invJac = inv(jac')
-
-        # Reset local matrix
-        fill!(A_local, 0.0)
+        detJac = abs(det(jac))
 
         # Transform the gradient
-        for point in basis, f in point
+        @inbounds for point in basis, f in point
             A_mul_B!(f.∇ϕ, invJac, f.grad)
         end
 
+        # Reset local matrix
+        fill!(A_local, zero(Tv))
+
         # For each quad point
-        @inbounds for k = 1 : length(xs)
+        @inbounds for k = 1 : Nq
             x = jac * xs[k] + shift
 
-            for i = 1:ns, j = 1:ns
+            for i = 1:dof, j = 1:dof
                 A_local[i,j] += ws[k] * bilinear_form(basis[k][i], basis[k][j], x)
             end
         end
 
-        A_local .*= abs(det(jac))
-
-        # Put A_local into A
-        @inbounds for i = 1:ns, j = 1:ns
-            idx = edge_to_idx(A, graph, element[i], element[j])
-            A.nzval[idx] += A_local[i,j]
+        # Copy stuff
+        @inbounds for i = 1:dof, j = 1:dof
+            is[idx] = triangle[i]
+            js[idx] = triangle[j]
+            vs[idx] = A_local[i,j] * detJac
+            idx += 1
         end
     end
 
-    # Build the matrix for interior connections only
-    return A[mesh.interior, mesh.interior]
+    return dropzeros!(sparse(is, js, vs, Nn, Nn))
 end
 
 """
-Build a rhs vector for a given mesh and function f
+Build a right-hand side
 """
-function build_rhs(mesh::Mesh{elT}, ::Type{quadT}, f) where {elT<:MeshElement,quadT<:QuadRule}
+function assemble_rhs(m::Mesh{Te,Ti,Tv}, f) where {Te,Ti,Tv}
     # Quadrature scheme
-    ws, xs = quadrature_rule(quadT)
-    ϕs, ∇ϕs = get_basis_funcs(elT)
+    ws, xs = quadrature_rule(Tri3)
+    ϕs, ∇ϕs = get_basis_funcs(Te)
     basis = evaluate_basis_funcs(ϕs, ∇ϕs, xs)
-    
-    # Nodes in each element
-    ns = length(first(mesh.elements))
 
-    b_global = zeros(mesh.n)
-    b_local = zeros(MVector{ns})
+    Nn = length(m.nodes)
+    Nq = length(xs)
+    dof = 3
+    
+    # Some stuff
+    b = zeros(Nn)
+    b_local = zeros(dof)
 
     # Loop over all elements & compute local system matrix
-    for element in mesh.elements
-        jac, shift = affine_map(mesh, element)
+    for triangle in m.triangles
+        jac, shift = affine_map(m, triangle)
+        invJac = inv(jac')
+        detJac = abs(det(jac))
 
         # Reset local matrix
-        fill!(b_local, 0.0)
+        fill!(b_local, zero(Tv))
 
         # For each quad point
-        @inbounds for k = 1 : length(xs)
+        @inbounds for k = 1 : Nq
             x = jac * xs[k] + shift
 
-            for i = 1:ns
+            for i = 1:dof
                 b_local[i] += ws[k] * f(x) * basis[k][i].ϕ
             end
         end
 
-        b_local .*= abs(det(jac))
-
-        # Put b_local into b
-        @inbounds for i = 1:ns
-            b[element[i]] += b_local[i]
+        # Copy stuff
+        @inbounds for i = 1:dof
+            b[triangle[i]] += b_local[i] * detJac
         end
     end
 
-    # Build the matrix for interior connections only
-    return b_global[mesh.interior]
+    return b
 end

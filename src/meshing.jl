@@ -1,60 +1,120 @@
-const Triangle = SVector{3,Float64}
+"""
+Adjacency list
+"""
+struct Graph{Ti}
+    edges::Vector{Vector{Ti}}
+    total::Vector{Ti}
+end
 
 """
-Creates a standard uniform mesh of the domain [0,1]
-with triangular elements
+Mesh is just a bunch of nodes and triangles
 """
-function uniform_mesh(n::Int = 16)
-    xs = linspace(0, 1, n + 1)
-    
-    total_nodes = (n + 1)^2
-    total_triangles = 2n^2
-    total_boundary = 4n
-    total_interior = total_nodes - total_boundary
+struct Mesh{Te<:MeshElement,Ti,Tv}
+    nodes::Vector{SVector{2,Tv}}
+    triangles::Vector{SVector{3,Ti}}
+end
 
-    nodes = Vector{Coord{2}}(total_nodes)
-    triangles = Vector{Triangle}(total_triangles)
-    boundary_nodes = Vector{Int}(total_boundary)
-    interior_nodes = Vector{Int}(total_interior)
+function Mesh(Te::Type{<:MeshElement}, nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}) where {Tv,Ti}
+    Mesh{Te,Ti,Tv}(nodes, triangles)
+end
 
-    # Nodes
-    idx_ext, idx_int = 1, 1
-    for i = 1 : n + 1, j = 1 : n + 1
-        idx = (i - 1) * (n + 1) + j
-        nodes[idx] = Coord{2}(xs[j], xs[i])
+"""
+Given an edge between nodes (n1, n2), return
+the natural index of the edge.
 
-        # On the edge?
-        if i == 1 || i == n + 1 || j == 1 || j == n + 1
-            boundary_nodes[idx_ext] = idx
-            idx_ext += 1
+Costs are O(log b) where b is the connectivity
+"""
+function edge_index(graph::Graph{Ti}, n1::Ti, n2::Ti) where {Ti}
+    n1, n2 = sort((n1, n2))
+    offset = searchsortedfirst(graph.edges[n1], n2)
+    graph.total[n1] + offset - 1
+end
+
+
+"""
+Add a new edge to a graph (this is slow / allocating)
+"""
+function add_edge!(g::Graph{Ti}, from::Ti, to::Ti) where {Ti}
+    from, to = sort((from, to))
+    push!(g.edges[from], to)
+end
+
+"""
+Sort the nodes in the adjacency list
+"""
+function sort_edges!(g::Graph)
+    for edges in g.edges
+        sort!(edges)
+    end
+end
+
+"""
+Find all edges that appear only once in the adjacency list,
+because that edge belongs to the boundary
+"""
+function collect_boundary_nodes!(g::Graph{Ti}, boundary_points::Vector{Ti}) where {Ti}
+    for (idx, edges) in enumerate(g.edges)
+        if collect_boundary_nodes!(edges, boundary_points)
+            push!(boundary_points, idx)
+        end
+    end
+end
+
+"""
+Find all edges that appear only once in the adjacency list,
+because that edge belongs to the boundary
+"""
+function collect_boundary_nodes!(vec::Vector{Ti}, boundary_points::Vector{Ti}) where {Ti}
+    Ne = length(vec)
+
+    if Ne == 0
+        return false
+    end
+
+    if Ne == 1
+        push!(boundary_points, vec[1])
+        return true
+    end
+
+    return_value = false
+
+    j = 1
+    @inbounds while j + 1 ≤ Ne
+        if vec[j] == vec[j + 1]
+            j += 2
         else
-            interior_nodes[idx_int] = idx
-            idx_int += 1
+            return_value = true
+            push!(boundary_points, vec[j])
+            j += 1
         end
     end
 
-    # Triangles
-    triangle = 1
-    for i = 1 : n, j = 1 : n
-        idx = (i - 1) * (n + 1) + j
-        
-        # (Top left, top right, bottom left)
-        triangles[triangle] = Triangle(idx, idx + 1, idx + n + 1)
-        triangle += 1
-
-        # (Top right, bottom left, bottom right)
-        triangles[triangle] = Triangle(idx + 1, idx + n + 1, idx + n + 2)
-        triangle += 1
+    if j == Ne
+        push!(boundary_points, vec[j])
+        return_value = true
     end
 
-    return Mesh{Tri,2,3}(total_nodes, nodes, triangles, boundary_nodes, interior_nodes)
+    return return_value
 end
 
-struct GraphBuilder
-    edges::Vector{Vector{Int}}
+"""
+Remove all duplicate edges
+"""
+function remove_duplicates!(g::Graph)
+    for adj in g.edges
+        remove_duplicates!(adj)
+    end
+
+    g
 end
 
+"""
+Remove duplicate entries from a vector.
+Resizes / shrinks the vector as well.
+"""
 function remove_duplicates!(vec::Vector)
+    length(vec) ≤ 1 && return vec
+
     j = 1
     @inbounds for i = 2 : length(vec)
         if vec[i] != vec[j]
@@ -68,43 +128,49 @@ function remove_duplicates!(vec::Vector)
     vec
 end
 
-function add_edge!(c::GraphBuilder, i::Int, j::Int)
-    if i == j
-        push!(c.edges[i], i)
-    else
-        push!(c.edges[i], j)
-        push!(c.edges[j], i)
-    end
-end
-
 """
-Creates the connectivity graph from the triangles
+Convert a mesh of nodes + triangles to a graph
 """
-function mesh_to_graph(m::Mesh)
-    c = GraphBuilder([Int[] for i = 1 : m.n])
-
-    for node in c.edges
-        sizehint!(node, 7)
+function to_graph(m::Mesh{Te,Ti,Tv}) where {Te,Tv,Ti}
+    Nn = length(m.nodes)
+    edges = [sizehint!(Ti[], 5) for i = 1 : Nn]
+    total = ones(Ti, Nn + 1)
+    g = Graph(edges, total)
+    
+    for triangle in m.triangles
+        add_edge!(g, triangle[1], triangle[2])
+        add_edge!(g, triangle[2], triangle[3])
+        add_edge!(g, triangle[3], triangle[1])
     end
 
-    # Self loops for each node
-    for i = 1 : m.n
-        add_edge!(c, i, i)
+    # Collect the boundary nodes
+    boundary_points = Vector{Ti}();
+    sort_edges!(g)
+    collect_boundary_nodes!(g, boundary_points)
+    remove_duplicates!(g)
+    sort!(boundary_points)
+    remove_duplicates!(boundary_points)
+
+    # TODO: refactor this
+    interior_points = Vector{Ti}(Nn - length(boundary_points))
+    num, idx = 1, 1
+    @inbounds for i in boundary_points
+        while num < i
+            interior_points[idx] = num
+            num += 1
+            idx += 1
+        end
+        num += 1
     end
 
-    # Edges of all triangles
-    for t in m.elements
-        add_edge!(c, t[1], t[2])
-        add_edge!(c, t[2], t[3])
-        add_edge!(c, t[1], t[3])
+    @inbounds for i = num : Nn
+        interior_points[idx] = i
+        idx += 1
     end
 
-    # Remove duplicates
-    n_edges = 0
-    for i = 1 : m.n
-        remove_duplicates!(sort!(c.edges[i]))
-        n_edges += length(c.edges[i])
+    @inbounds for i = 1 : Nn
+        g.total[i + 1] = g.total[i] + length(g.edges[i])
     end
 
-    return Graph(m.n, n_edges, c.edges)
+    return g, boundary_points, interior_points
 end

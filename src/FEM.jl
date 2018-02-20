@@ -1,30 +1,19 @@
 module FEM
 
+import Base.sort, Base.isless
+
 using Calculus
 using StaticArrays
 using WriteVTK
 
 const Coord{d} = SVector{d,Float64}
 
-struct Mesh{elT,d,e}
-    n::Int
-    nodes::Vector{SVector{d,Float64}}
-    elements::Vector{SVector{e,Int}}
-    boundary::Vector{Int}
-    interior::Vector{Int}
-end
-
-struct Graph
-    n_nodes::Int
-    n_edges::Int
-    edges::Vector{Vector{Int}}
-end
-
 include("quadrature.jl")
 include("elements.jl")
 include("meshing.jl")
 include("assembly.jl")
-include("refinement.jl")
+include("multigrid.jl")
 include("examples.jl")
+include("utils.jl")
 
 end
