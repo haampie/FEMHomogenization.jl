@@ -2,7 +2,6 @@ module FEM
 
 import Base.sort, Base.isless
 
-using Calculus
 using StaticArrays
 using WriteVTK
 
