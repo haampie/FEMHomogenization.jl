@@ -133,12 +133,19 @@ function add_edge!(g::MyGraph{Ti}, from::Ti, to::Ti) where {Ti}
     push!(g.edges[from], to)
 end
 
+"""
+Sort the nodes in the adjacency list
+"""
 function sort_edges!(g::MyGraph)
     for edges in g.edges
         sort!(edges)
     end
 end
 
+"""
+Find all edges that appear only once in the adjacency list,
+because that edge belongs to the boundary
+"""
 function collect_boundary_nodes!(g::MyGraph{Ti}, boundary_points::Vector{Ti}) where {Ti}
     for (idx, edges) in enumerate(g.edges)
         if collect_boundary_nodes!(edges, boundary_points)
@@ -147,6 +154,10 @@ function collect_boundary_nodes!(g::MyGraph{Ti}, boundary_points::Vector{Ti}) wh
     end
 end
 
+"""
+Find all edges that appear only once in the adjacency list,
+because that edge belongs to the boundary
+"""
 function collect_boundary_nodes!(vec::Vector{Ti}, boundary_points::Vector{Ti}) where {Ti}
     Ne = length(vec)
 
@@ -233,8 +244,9 @@ function to_graph(nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}
     remove_duplicates!(g)
     sort!(boundary_points)
     remove_duplicates!(boundary_points)
-    interior_points = Vector{Ti}(n - length(boundary_points))
 
+    # TODO: refactor this
+    interior_points = Vector{Ti}(n - length(boundary_points))
     num, idx = 1, 1
     @inbounds for i in boundary_points
         while num < i
@@ -257,6 +269,12 @@ function to_graph(nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}
     return g, boundary_points, interior_points
 end
 
+"""
+Returns the affine map from the blueprint triangle to the given
+triangle.
+
+TODO: dispatch on element type (Triangle)
+"""
 function affine_map(nodes::Vector{SVector{2,Tv}}, el::SVector{3,Ti}) where {Tv,Ti}
     p1, p2, p3 = nodes[el[1]], nodes[el[2]], nodes[el[3]]
     return [p2 - p1 p3 - p1], p1
@@ -317,30 +335,60 @@ function assemble_matrix(nodes::Vector{SVector{2,Tv}}, elements::Vector{SVector{
         end
     end
 
-    # Build the matrix for interior connections only
     return dropzeros!(sparse(is, js, vs, Nn, Nn))
 end
 
 """
-Refine a grid a few times uniformly
+Build a right-hand side
 """
-function refinement_example(refinements = 9, ::Type{Ti} = Int32, ::Type{Tv} = Float64) where {Ti,Tv}
-    nodes = SVector{2,Tv}[(0, 0), (1, 0), (1, 1), (0, 1)]
-    triangles = SVector{3,Ti}[(1, 2, 3), (1, 4, 3)]
-    graph, boundary, interior = to_graph(nodes, triangles)
+function assemble_rhs(nodes::Vector{SVector{2,Tv}}, elements::Vector{SVector{3,Ti}}, f) where {Ti,Tv}
+    # Quadrature scheme
+    ws, xs = quadrature_rule(Tri3)
+    ϕs, ∇ϕs = get_basis_funcs(Tri)
+    basis = evaluate_basis_funcs(ϕs, ∇ϕs, xs)
 
-    for i = 1 : refinements
-        nodes, triangles = refine(nodes, triangles, graph)
-        graph, boundary, interior = to_graph(nodes, triangles)
+    Nn = length(nodes)
+    Nq = length(xs)
+    dof = 3
+    
+    # Some stuff
+    b = zeros(Nn)
+    b_local = zeros(dof)
+
+    # Loop over all elements & compute local system matrix
+    for element in elements
+        jac, shift = affine_map(nodes, element)
+        invJac = inv(jac')
+        detJac = abs(det(jac))
+
+        # Reset local matrix
+        fill!(b_local, zero(Tv))
+
+        # For each quad point
+        @inbounds for k = 1 : Nq
+            x = jac * xs[k] + shift
+
+            for i = 1:dof
+                b_local[i] += ws[k] * f(x) * basis[k][i].ϕ
+            end
+        end
+
+        # Copy stuff
+        @inbounds for i = 1:dof
+            b[element[i]] += b_local[i] * detJac
+        end
     end
 
-    return assemble_matrix(nodes, triangles, (u, v, x) -> dot(u.∇ϕ, v.∇ϕ))
+    return b
 end
 
-function save_file(name::String, nodes, triangles, f)
+"""
+Save a mesh with nodal values as a vtk file that can be used in Paraview.
+"""
+function save_file(name::String, nodes, triangles, values)
     node_matrix = [x[i] for i = 1:2, x in nodes]
     triangle_stuff = [MeshCell(VTKCellTypes.VTK_TRIANGLE, Vector(t)) for t in triangles]
     vtkfile = vtk_grid(name, node_matrix, triangle_stuff)
-    vtk_point_data(vtkfile, f.(nodes), "f")
+    vtk_point_data(vtkfile, values, "f")
     vtk_save(vtkfile)
 end

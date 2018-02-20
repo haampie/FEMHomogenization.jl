@@ -263,3 +263,63 @@ function example5(n::Int = 512, shift::Float64 = 1.0)
 
     return A \ b
 end
+
+"""
+Refine a grid a few times uniformly
+"""
+function refinement_example(refinements = 10, ::Type{Ti} = Int32, ::Type{Tv} = Float64) where {Ti,Tv}
+    nodes = SVector{2,Tv}[(0, 0), (1, 0), (1, 1), (0, 1)]
+    triangles = SVector{3,Ti}[(1, 2, 3), (1, 4, 3)]
+    graph, boundary, interior = to_graph(nodes, triangles)
+
+    for i = 1 : refinements
+        nodes, triangles = refine(nodes, triangles, graph)
+        graph, boundary, interior = to_graph(nodes, triangles)
+    end
+
+    A = assemble_matrix(nodes, triangles, (u, v, x) -> dot(u.∇ϕ, v.∇ϕ))
+    b = assemble_rhs(nodes, triangles, x -> 1.0)
+
+    return A, b, interior
+end
+
+"""
+A geometric level of the grid
+"""
+struct Level{Tv,Ti}
+    nodes::Vector{SVector{2,Tv}}
+    triangles::Vector{SVector{3,Ti}}
+    graph::MyGraph{Ti}
+    boundary::Vector{Ti}
+    interior::Vector{Ti}
+end
+
+function build_hierarchy(refinements::Int = 10, ::Type{Ti} = Int64, ::Type{Tv} = Float64) where {Ti,Tv}
+    interpolation = Vector{SparseMatrixCSC{Tv,Ti}}(refinements - 1)
+    levels = Vector{Level{Tv,Ti}}(refinements)
+
+    # Initial mesh is 2 triangles in a square
+    nodes = SVector{2,Tv}[(0, 0), (1, 0), (1, 1), (0, 1)]
+    triangles = SVector{3,Ti}[(1, 2, 3), (1, 4, 3)]
+    graph, boundary, interior = to_graph(nodes, triangles)
+    levels[1] = Level(nodes, triangles, graph, boundary, interior)
+
+    # Then we refine a couple times
+    for i = 1 : refinements - 1
+        interpolation[i] = interpolation_operator(nodes, graph)
+        nodes, triangles = refine(nodes, triangles, graph)
+        graph, boundary, interior = to_graph(nodes, triangles)
+        levels[i + 1] = Level(nodes, triangles, graph, boundary, interior)
+    end
+
+    # Start with random values on the coarsest grid
+    # and interpolate them to the finer grids.
+    vals = rand(length(levels[1].nodes))
+    save_file("grid_01", levels[1].nodes, levels[1].triangles, vals)
+
+    for i = 2 : refinements
+        vals = interpolation[i - 1]' * vals
+        name = @sprintf "grid_%02d" i
+        save_file(name, levels[i].nodes, levels[i].triangles, vals)
+    end
+end
