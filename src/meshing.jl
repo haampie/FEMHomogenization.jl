@@ -174,3 +174,21 @@ function to_graph(m::Mesh{Te,Ti,Tv}) where {Te,Tv,Ti}
 
     return g, boundary_points, interior_points
 end
+
+"""
+Mesh a square in triangles
+"""
+function uniform_square(refinements::Int = 4)
+    nodes = SVector{2,Float64}[(0, 0), (1, 0), (1, 1), (0, 1)]
+    triangles = SVector{3,Int64}[(1, 2, 3), (1, 4, 3)]
+    mesh = Mesh(Tri, nodes, triangles)
+
+    graph, boundary, interior = to_graph(mesh)
+
+    for i = 1 : refinements
+        mesh = refine(mesh, graph)
+        graph, boundary, interior = to_graph(mesh)
+    end
+
+    return mesh, graph, interior
+end

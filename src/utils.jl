@@ -17,10 +17,14 @@ end
 """
 Save a mesh with nodal values as a vtk file that can be used in Paraview.
 """
-function save_file(name::String, m::Mesh{Tri}, values)
+function save_file(name::String, m::Mesh{Tri}, values::Dict{String,T}) where {T <: AbstractArray}
     node_matrix = [x[i] for i = 1:2, x in m.nodes]
     triangle_list = MeshCell[MeshCell(VTKCellTypes.VTK_TRIANGLE, Vector(t)) for t in m.triangles]
     vtkfile = vtk_grid(name, node_matrix, triangle_list)
-    vtk_point_data(vtkfile, values, "f")
+
+    for (name, data) in values
+        vtk_point_data(vtkfile, data, name)
+    end
+    
     vtk_save(vtkfile)
 end

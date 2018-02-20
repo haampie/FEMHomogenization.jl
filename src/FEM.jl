@@ -13,7 +13,8 @@ include("elements.jl")
 include("meshing.jl")
 include("assembly.jl")
 include("multigrid.jl")
-include("examples.jl")
 include("utils.jl")
+include("examples.jl")
+include("example_homogenization.jl")
 
 end
