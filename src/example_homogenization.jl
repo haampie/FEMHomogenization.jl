@@ -16,6 +16,46 @@ function checkerboard(m::Int)
 end
 
 """
+This example solves a laplace-like problem with an
+oscillating conductivity (checkerboard pattern).
+It also solves the homogenized problem and saves
+the results to a vtk file.
+"""
+function example3(refinements::Int = 6, c::Int = 10)
+    mesh, graph, interior = uniform_square(refinements)
+    
+    a11 = checkerboard(c)
+    a22 = checkerboard(c)
+    λ = 0.25
+
+    B1 = (u, v, x) -> a11(x) * u.∇ϕ[1] * v.∇ϕ[1] + a22(x) * u.∇ϕ[2] * v.∇ϕ[2]
+    B2 = (u, v, x) -> 3.0 * dot(u.∇ϕ, v.∇ϕ)
+    B3 = (u, v, x) -> u.ϕ * v.ϕ
+    f = x -> x[1] * x[2]
+
+    # Differential and homogenized operator
+    A = assemble_matrix(mesh, B1)
+    Ā = assemble_matrix(mesh, B2)
+
+    # Rhs
+    b = assemble_rhs(mesh, f)
+    b_int = b[interior]
+
+    x = zeros(b)
+    x̄ = zeros(b)
+
+    x[interior] = A[interior,interior] \ b_int
+    x̄[interior] = Ā[interior,interior] \ b_int
+
+    save_file("results", mesh, Dict(
+        "x"     => x, 
+        "x_bar" => x̄, 
+        "a11"   => a11.(mesh.nodes), 
+        "a22"   => a22.(mesh.nodes)
+    ))
+end
+
+"""
 For a fixed λ and a fixed dimension of the problem
 find the contraction factor as the size of the domain increases
 """
@@ -211,38 +251,4 @@ function example2(c = 40, n = 513, λ = 0.25)
     end
 
     return exact, steps, v
-end
-
-function example3(refinements::Int = 6, c::Int = 10)
-    mesh, graph, interior = uniform_square(refinements)
-    
-    a11 = checkerboard(c)
-    a22 = checkerboard(c)
-    λ = 0.25
-
-    B1 = (u, v, x) -> a11(x) * u.∇ϕ[1] * v.∇ϕ[1] + a22(x) * u.∇ϕ[2] * v.∇ϕ[2]
-    B2 = (u, v, x) -> 3.0 * dot(u.∇ϕ, v.∇ϕ)
-    B3 = (u, v, x) -> u.ϕ * v.ϕ
-    f = x -> x[1] * x[2]
-
-    # Differential and homogenized operator
-    A = assemble_matrix(mesh, B1)
-    Ā = assemble_matrix(mesh, B2)
-
-    # Rhs
-    b = assemble_rhs(mesh, f)
-    b_int = b[interior]
-
-    x = zeros(b)
-    x̄ = zeros(b)
-
-    x[interior] = A[interior,interior] \ b_int
-    x̄[interior] = Ā[interior,interior] \ b_int
-
-    save_file("results", mesh, Dict(
-        "x"     => x, 
-        "x_bar" => x̄, 
-        "a11"   => a11.(mesh.nodes), 
-        "a22"   => a22.(mesh.nodes)
-    ))
 end
