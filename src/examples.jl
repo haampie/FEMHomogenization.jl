@@ -17,6 +17,26 @@ function example4(refinements::Int = 6, shift::Float64 = 1.0)
     return mesh, x
 end
 
+function vcycle(level::Int, A::SparseMatrixCSC, r::Vector, Ps::Vector)
+    if size(A, 1) ≤ 64 || level == 1
+        return A \ r
+    end
+
+    e = zeros(size(r))
+
+    for i = 1 : 5
+        e += 0.2 * (r - A * e)
+    end
+
+    e += Ps[level]' * vcycle(level - 1, dropzeros!(Ps[level] * (A * Ps[level]')), Ps[level] * (r - A * e), Ps)
+
+    for i = 1 : 5
+        e += 0.2 * (r - A * e)
+    end
+
+    return e
+end
+
 function example_multigrid(refinements::Int = 10, ::Type{Ti} = Int64, ::Type{Tv} = Float64) where {Ti,Tv}
     interpolation = Vector{SparseMatrixCSC{Tv,Ti}}(refinements - 1)
     levels = Vector{Level{Tri,Tv,Ti}}(refinements)
@@ -30,20 +50,26 @@ function example_multigrid(refinements::Int = 10, ::Type{Ti} = Int64, ::Type{Tv}
 
     # Then we refine a couple times
     for i = 1 : refinements - 1
-        interpolation[i] = interpolation_operator(graph)
+        interpolation[i] = interpolation_operator(mesh, graph)
         mesh = refine(mesh, graph)
         graph, boundary, interior = to_graph(mesh)
         levels[i + 1] = Level(mesh, graph, boundary, interior)
     end
 
-    # Start with random values on the coarsest grid
-    # and interpolate them to the finer grids.
-    vals = rand(length(levels[1].mesh.nodes))
-    save_file("grid_01", levels[1].mesh, vals)
+    bilinear_form = (u, v, x) -> dot(u.∇ϕ, v.∇ϕ) + norm(x)
+    load = x -> 1.0
 
-    for i = 2 : refinements
-        vals = interpolation[i - 1]' * vals
-        name = @sprintf "grid_%02d" i
-        save_file(name, levels[i].mesh, vals)
+    # Large matrix A and large rhs b
+    A = assemble_matrix(last(levels).mesh, bilinear_form)
+    b = assemble_rhs(last(levels).mesh, load)
+    x = rand(size(b))
+    ω = 0.2
+
+    @time exact = A \ b
+
+    # Coarse grid:
+    @time for i = 1 : 4
+        x += vcycle(length(interpolation), A, b - A * x, interpolation)
+        @show norm(exact - x)
     end
 end

@@ -46,7 +46,7 @@ end
 """
 Return the interpolation operator
 """
-function interpolation_operator(graph::Graph{Ti}) where {Ti}
+function interpolation_operator(mesh::Mesh{Te,Ti,Tv}, graph::Graph{Ti}) where {Te,Ti,Tv}
     # Interpolation operator
     Nn = length(graph.edges)
     Ne = graph.total[end] - 1
