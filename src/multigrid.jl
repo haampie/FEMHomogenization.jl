@@ -19,7 +19,7 @@ function refine(m::Mesh{Tri,Ti,Tv}, graph::FastGraph{Ti}) where {Tv,Ti}
     
     # Add the new ones
     idx = Nn + 1
-    for i = 1 : length(graph.ptr) - 1
+    @inbounds for i = 1 : length(graph.ptr) - 1
         for j = graph.ptr[i] : graph.ptr[i + 1] - 1
             nodes[idx] = (m.nodes[i] + m.nodes[graph.adj[j]]) / 2
             idx += 1
@@ -27,7 +27,7 @@ function refine(m::Mesh{Tri,Ti,Tv}, graph::FastGraph{Ti}) where {Tv,Ti}
     end
 
     # Split each triangle in four smaller ones
-    for (i, t) in enumerate(m.triangles)
+    @inbounds for (i, t) in enumerate(m.triangles)
 
         # Index of the nodes on the new edges
         a = edge_index(graph, t[1], t[2]) + Nn
