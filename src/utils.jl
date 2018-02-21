@@ -25,9 +25,17 @@ function save_file(name::String, m::Mesh{Tri}, values::Dict{String,T}) where {T 
     triangle_list = MeshCell[MeshCell(VTKCellTypes.VTK_TRIANGLE, Vector(t)) for t in m.triangles]
     vtkfile = vtk_grid(name, node_matrix, triangle_list)
 
-    for (name, data) in values
-        vtk_point_data(vtkfile, data, name)
+    for (v_name, data) in values
+        vtk_point_data(vtkfile, data, v_name)
     end
     
+    vtk_save(vtkfile)
+end
+
+function save_file(name::String, m::Mesh{Tri}, data::T) where {T <: AbstractArray}
+    node_matrix = [x[i] for i = 1:2, x in m.nodes]
+    triangle_list = MeshCell[MeshCell(VTKCellTypes.VTK_TRIANGLE, Vector(t)) for t in m.triangles]
+    vtkfile = vtk_grid(name, node_matrix, triangle_list, compress=false)
+    vtk_point_data(vtkfile, data, "f")
     vtk_save(vtkfile)
 end

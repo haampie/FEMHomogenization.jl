@@ -47,48 +47,50 @@ end
 
 """
 Return the interpolation operator
-TODO: FIX ME
 """
 function interpolation_operator(mesh::Mesh{Te,Ti,Tv}, graph::FastGraph{Ti}) where {Te,Ti,Tv}
     # Interpolation operator
-    Nn = length(graph.edges)
-    Ne = graph.total[end] - 1
+    Nn = length(mesh.nodes)
+    Ne = length(graph.adj)
 
     nzval = Vector{Tv}(Nn + 2Ne)
     colptr = Vector{Ti}(Nn + Ne + 1)
     rowval = Vector{Ti}(Nn + 2Ne)
 
     # Nonzero values
-    for i = 1 : Nn
+    @inbounds for i = 1 : Nn
         nzval[i] = 1.0
     end
 
-    for i = Nn + 1 : Nn + 2Ne
+    @inbounds for i = Nn + 1 : Nn + 2Ne
         nzval[i] = 0.5
     end
 
     # Column pointer
-    for i = 1 : Nn + 1
+    @inbounds for i = 1 : Nn + 1
         colptr[i] = i
     end
 
-    for i = Nn + 2 : Nn + Ne + 1
+    @inbounds for i = Nn + 2 : Nn + Ne + 1
         colptr[i] = 2 + colptr[i - 1]
     end
 
     # Row values
-    for i = 1 : Nn
+    @inbounds for i = 1 : Nn
         rowval[i] = i
     end
 
     idx = Nn + 1
-    for (from, edges) in enumerate(graph.edges), to in edges
-        rowval[idx] = from
-        rowval[idx + 1] = to
-        idx += 2
+    for i = 1 : Nn
+        for j = graph.ptr[i] : graph.ptr[i + 1] - 1
+            rowval[idx] = i
+            rowval[idx + 1] = graph.adj[j]
+            idx += 2
+        end
     end
 
-    return SparseMatrixCSC(Nn, Nn + Ne, colptr, rowval, nzval)
+    # Note the transpose
+    return SparseMatrixCSC(Nn, Nn + Ne, colptr, rowval, nzval)'
 end
 
 """
@@ -97,6 +99,5 @@ A geometric level of the grid
 struct Level{Te,Tv,Ti}
     mesh::Mesh{Te,Ti,Tv}
     graph::FastGraph{Ti}
-    boundary::Vector{Ti}
     interior::Vector{Ti}
 end
