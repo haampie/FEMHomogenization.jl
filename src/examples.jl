@@ -1,3 +1,11 @@
+function example_assembly(refinements::Int = 10)
+    mesh, graph, interior = uniform_square(refinements)
+    bilinear_form = (u, v, x) -> dot(u.∇ϕ, v.∇ϕ)
+    A = assemble_matrix(mesh, bilinear_form)
+
+    return A, interior, mesh
+end
+
 function example4(refinements::Int = 6, shift::Float64 = 1.0)
     # Initial grid
     mesh, graph, interior = uniform_square(refinements)
