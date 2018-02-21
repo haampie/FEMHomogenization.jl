@@ -1,4 +1,7 @@
 sort(t::NTuple{2,T}) where {T} = t[1] < t[2] ? (t[1], t[2]) : (t[2], t[1])
+@inline function sort(a::T, b::T) where {T}
+    return a < b ? (a, b) : (b, a)
+end
 
 @inline function isless(a::SVector{2,T}, b::SVector{2,T}) where {T}
     if a.data[1] < b.data[1]

@@ -3,10 +3,10 @@
 Uniformly refine a mesh of triangles: each triangle
 is split into four new triangles.
 """
-function refine(m::Mesh{Tri,Ti,Tv}, graph::Graph{Ti}) where {Tv,Ti}
+function refine(m::Mesh{Tri,Ti,Tv}, graph::FastGraph{Ti}) where {Tv,Ti}
     Nn = length(m.nodes)
     Nt = length(m.triangles)
-    Ne = graph.total[end] - 1
+    Ne = graph.ptr[end] - 1
 
     # Each edge is split 2, so Nn + Ne is the number of nodes
     nodes = Vector{SVector{2,Tv}}(Nn + Ne)
@@ -19,9 +19,11 @@ function refine(m::Mesh{Tri,Ti,Tv}, graph::Graph{Ti}) where {Tv,Ti}
     
     # Add the new ones
     idx = Nn + 1
-    for (from, edges) in enumerate(graph.edges), to in edges
-        nodes[idx] = (m.nodes[from] + m.nodes[to]) / 2
-        idx += 1
+    for i = 1 : length(graph.ptr) - 1
+        for j = graph.ptr[i] : graph.ptr[i + 1] - 1
+            nodes[idx] = (m.nodes[i] + m.nodes[graph.adj[j]]) / 2
+            idx += 1
+        end
     end
 
     # Split each triangle in four smaller ones
@@ -45,8 +47,9 @@ end
 
 """
 Return the interpolation operator
+TODO: FIX ME
 """
-function interpolation_operator(mesh::Mesh{Te,Ti,Tv}, graph::Graph{Ti}) where {Te,Ti,Tv}
+function interpolation_operator(mesh::Mesh{Te,Ti,Tv}, graph::FastGraph{Ti}) where {Te,Ti,Tv}
     # Interpolation operator
     Nn = length(graph.edges)
     Ne = graph.total[end] - 1
@@ -93,7 +96,7 @@ A geometric level of the grid
 """
 struct Level{Te,Tv,Ti}
     mesh::Mesh{Te,Ti,Tv}
-    graph::Graph{Ti}
+    graph::FastGraph{Ti}
     boundary::Vector{Ti}
     interior::Vector{Ti}
 end
