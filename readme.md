@@ -1,3 +1,5 @@
+[![Build Status](https://travis-ci.org/haampie/FEMHomogenization.jl.svg?branch=master)](https://travis-ci.org/haampie/FEMHomogenization.jl)
+
 # FEMHomogenization.jl
 
 Some basic FEM functionality in Julia.
