@@ -99,15 +99,13 @@ function assemble_multigrid_matrices(grids::Vector{Grid{Te,Tv,Ti}}, Ps, bilinear
     As = Vector{SparseMatrixCSC{Tv,Ti}}(k)
     
     # Assemble the finest grid
-    begin
-        is = grids[k].interior
-        A_all = assemble_matrix(grids[k].mesh, bilinear_form)
-        As[k] = A_all[is, is]
-    end
+    A_all = assemble_matrix(grids[k].mesh, bilinear_form)
+
+    # Only keep the 'interior'
+    As[k] = A_all[grids[k].interior, grids[k].interior]
 
     # And then build the Galerkin projections P' * A * P
     for j = k - 1 : -1 : 1
-        is = grids[j].interior
         As[j] = dropzeros!(Ps[j]' * (As[j + 1] * Ps[j]))
     end
 
@@ -157,16 +155,16 @@ function example_multigrid_stuff()
     grids = build_multigrid_meshes(mesh, 8)
 
     # Get the interpolation operators
-    Ps = build_interpolation_operators(grids)
+    @time Ps = build_interpolation_operators(grids)
 
     # Build the coefficient matrices
-    As = assemble_multigrid_matrices(grids, Ps, bilinear_form)
+    @time As = assemble_multigrid_matrices(grids, Ps, bilinear_form)
 
     # Build a right-hand side on the finest grid
     b = assemble_rhs(grids[end].mesh, load)
     b_int = b[grids[end].interior]
     
-    mg = initialize_multigrid(grids, Ps, As)
+    @time mg = initialize_multigrid(grids, Ps, As)
 
     # Do the multigrid solve
     x1 = zeros(b);
@@ -231,7 +229,7 @@ function vcycle!(mg::Multigrid, level::Int, smooth::Int)
     # Pre-smooth
     for i = 1 : smooth
         # axpy, but just use Julia broadcasting
-        lvl.x .+= 0.11 .* lvl.r
+        lvl.x .+= 0.2 .* lvl.r
 
         # r = b - A *x
         A_mul_B!(lvl.tmp, lvl.A, lvl.x)
@@ -261,7 +259,7 @@ function vcycle!(mg::Multigrid, level::Int, smooth::Int)
         # r = b - A *x
         A_mul_B!(lvl.tmp, lvl.A, lvl.x)
         lvl.r .= lvl.b .- lvl.tmp
-        lvl.x .+= 0.11 .* lvl.r
+        lvl.x .+= 0.2 .* lvl.r
     end
 
     return nothing
