@@ -92,12 +92,3 @@ function interpolation_operator(mesh::Mesh{Te,Ti,Tv}, graph::FastGraph{Ti}) wher
     # Note the transpose
     return SparseMatrixCSC(Nn, Nn + Ne, colptr, rowval, nzval)'
 end
-
-"""
-A geometric level of the grid
-"""
-struct Level{Te,Tv,Ti}
-    mesh::Mesh{Te,Ti,Tv}
-    graph::FastGraph{Ti}
-    interior::Vector{Ti}
-end
