@@ -1,5 +1,5 @@
 using Base.Test
-using FEM: remove_duplicates!
+using FEMHomogenization: remove_duplicates!
 
 @test remove_duplicates!([]) == []
 @test remove_duplicates!([3]) == [3]

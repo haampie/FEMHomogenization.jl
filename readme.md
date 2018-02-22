@@ -1,4 +1,4 @@
-# FEM.jl
+# FEMHomogenization.jl
 
 Some basic FEM functionality in Julia.
 
@@ -10,7 +10,7 @@ We refine
 
 ```julia
 using StaticArrays
-using FEM: Mesh, Tri, assemble_matrix, assemble_rhs, save_file,
+using FEMHomogenization: Mesh, Tri, assemble_matrix, assemble_rhs, save_file,
            construct_graph_and_find_interior_nodes, refine, checkerboard
 
 # Build a simple mesh from two triangles

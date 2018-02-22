@@ -1,4 +1,4 @@
-using FEM
+using FEMHomogenization: example_assembly
 using BenchmarkTools
 
-@benchmark FEM.example_assembly(10)
+@benchmark example_assembly(10)
