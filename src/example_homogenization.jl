@@ -9,9 +9,20 @@ function checkerboard(m::Int)
 
     # Given a coordinate, return the value
     return (x::Coord{2}) -> begin
-        x_idx::Int = 1 + floor(Int, x[1] * m)
-        y_idx::Int = 1 + floor(Int, x[2] * m)
-        return A[y_idx, x_idx]::Float64
+        x_idx = rem(floor(Int, x[1] * m), m + 1)
+        y_idx = rem(floor(Int, x[2] * m), m + 1)
+        # Rem correction
+        if x_idx < 0 
+            x_idx += m + 1
+        end
+        if y_idx < 0
+            y_idx += m + 1
+        end
+        # Offset correction
+        x_idx += 1
+        y_idx += 1
+
+        return A[y_idx, x_idx]
     end
 end
 
@@ -22,7 +33,7 @@ It also solves the homogenized problem and saves
 the results to a vtk file.
 """
 function example3(refinements::Int = 6, c::Int = 10)
-    mesh, graph, interior = uniform_square(refinements)
+    mesh, graph, interior = unit_square(refinements)
     
     a11 = checkerboard(c)
     a22 = checkerboard(c)

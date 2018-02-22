@@ -2,7 +2,7 @@
 Create a uniformly refined grid on the unit square
 """
 function example_assembly(refinements::Int = 10)
-    mesh, graph, interior = uniform_square(refinements)
+    mesh, graph, interior = unit_square(refinements)
     bilinear_form = (u, v, x) -> dot(u.∇ϕ, v.∇ϕ)
     A = assemble_matrix(mesh, bilinear_form)
 
@@ -13,7 +13,7 @@ end
 Solve a simple problem with a direct method
 """
 function example_solve(refinements::Int = 6)
-    mesh, graph, interior = uniform_square(refinements)
+    mesh, graph, interior = unit_square(refinements)
     bilinear_form = (u, v, x) -> dot(u.∇ϕ, v.∇ϕ) + u.ϕ * v.ϕ
     load = x -> sqrt(x[1] * x[2])
 
@@ -126,7 +126,7 @@ function example_multigrid_stuff()
     load = x -> 1.0
 
     # Build an initial grid
-    mesh, graph, interior = uniform_square(3)
+    mesh, graph, interior = unit_square(3)
 
     # Refine the grid a couple times
     grids = build_multigrid_meshes(mesh, 8)

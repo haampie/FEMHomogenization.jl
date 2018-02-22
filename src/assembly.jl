@@ -114,8 +114,8 @@ Build a right-hand side
 """
 function assemble_rhs(m::Mesh{Te,Ti,Tv}, f; quad::Type{<:QuadRule} = default_quadrature(Te)) where {Te,Ti,Tv}
     # Quadrature scheme
-    ws, xs = quadrature_rule(quad)
     ϕs, ∇ϕs = get_basis_funcs(Te)
+    ws, xs = quadrature_rule(quad)
     basis = evaluate_basis_funcs(ϕs, ∇ϕs, xs)
 
     Nn = length(m.nodes)

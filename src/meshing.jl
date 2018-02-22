@@ -1,12 +1,16 @@
 """
-Mesh is just a bunch of nodes and triangles
+Mesh is a collection of nodes and elements connecting the nodes
+Right now the only supported element type is triangles.
 """
 struct Mesh{Te<:MeshElement,Ti,Tv}
     nodes::Vector{SVector{2,Tv}}
     triangles::Vector{SVector{3,Ti}}
 end
 
-function Mesh(Te::Type{<:MeshElement}, nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}) where {Tv,Ti}
+"""
+Constructor for triangles
+"""
+function Mesh(Te::Type{Tri}, nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}) where {Tv,Ti}
     Mesh{Te,Ti,Tv}(nodes, triangles)
 end
 
@@ -19,9 +23,7 @@ struct FastGraph{Ti}
 end
 
 """
-Given an edge between nodes (n1, n2), return
-the natural index of the edge.
-
+Given an edge between nodes (n1, n2), return the natural index of the edge.
 Costs are O(log b) where b is the connectivity
 """
 function edge_index(graph::FastGraph{Ti}, n1::Ti, n2::Ti) where {Ti}
@@ -41,7 +43,7 @@ function sort_edges!(g::FastGraph)
 end
 
 """
-Returns a sorted list of nodes on the boundary of the domain
+Returns a sorted list of nodes on the boundary of the domain. 
 Complexity is O(E + B log B) where E is the number of edges and B the number
 of nodes on the boundary.
 """
@@ -89,8 +91,8 @@ function collect_boundary_nodes!(g::FastGraph{Ti}, boundary_nodes::Vector{Ti}) w
 end
 
 """
-Returns a sorted list of nodes in the interior of the domain
-Complexity is O(N) where N is the number of nodes
+Returns a sorted list of nodes in the interior of the domain Complexity is O(N) 
+where N is the number of nodes
 """
 function to_interior(boundary_nodes::Vector{Ti}, n::Integer) where {Ti}
     interior_nodes = Vector{Ti}(n - length(boundary_nodes))
@@ -155,29 +157,29 @@ function remove_duplicates!(g::FastGraph)
 end
 
 """
-Remove duplicate entries from a vector.
-Resizes / shrinks the vector as well.
+Remove duplicate entries from a sorted vector. Resizes the vector as well.
 """
 function remove_duplicates!(vec::Vector)
-    length(vec) ≤ 1 && return vec
+    n = length(vec)
 
-    j = 1
-    @inbounds for i = 2 : length(vec)
-        if vec[i] != vec[j]
-            j += 1
-            vec[j] = vec[i]
-        end
+    # Can only be unique
+    n ≤ 1 && return vec
+
+    # Discard repeated entries
+    slow = 1
+    @inbounds for fast = 2 : n
+        vec[slow] == vec[fast] && continue
+        slow += 1
+        vec[slow] = vec[fast]
     end
 
-    resize!(vec, j)
-
-    vec
+    # Return the resized vector with unique elements
+    return resize!(vec, slow)
 end
 
 """
-Construct the adjacency list much like the
-colptr and rowval arrays in the SparseMatrixCSC
-type
+Construct the adjacency list much like the colptr and rowval arrays in the 
+SparseMatrixCSC type
 """
 function to_graph(mesh::Mesh{Tri})
     Nn = length(mesh.nodes)
@@ -228,7 +230,7 @@ end
 """
 Divide the unit square into a mesh of triangles
 """
-function uniform_square(refinements::Int = 4)
+function unit_square(refinements::Int = 4)
     nodes = SVector{2,Float64}[(0, 0), (1, 0), (1, 1), (0, 1)]
     triangles = SVector{3,Int64}[(1, 2, 3), (1, 4, 3)]
     mesh = Mesh(Tri, nodes, triangles)

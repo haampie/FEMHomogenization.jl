@@ -3,20 +3,6 @@ sort(t::NTuple{2,T}) where {T} = t[1] < t[2] ? (t[1], t[2]) : (t[2], t[1])
     return a < b ? (a, b) : (b, a)
 end
 
-@inline function isless(a::SVector{2,T}, b::SVector{2,T}) where {T}
-    if a.data[1] < b.data[1]
-        return true
-    elseif a.data[1] > b.data[1]
-        return false
-    else
-        return a.data[2] < b.data[2]
-    end
-end
-
-function contains_sorted(a::Vector{T}, x::T) where {T}
-    return searchsortedfirst(a, x) != length(a) + 1
-end
-
 """
 Save a mesh with nodal values as a vtk file that can be used in Paraview.
 """

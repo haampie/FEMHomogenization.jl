@@ -1,5 +1,4 @@
 using FEM
+using BenchmarkTools
 
-FEM.example3()
-Profile.clear()
-FEM.example3()
+@benchmark FEM.example_assembly(10)
