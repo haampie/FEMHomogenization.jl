@@ -7,6 +7,11 @@ function affine_map(m::Mesh{Tri,Ti,Tv}, el::SVector{3,Ti}) where {Tv,Ti}
     return [p2 - p1 p3 - p1], p1
 end
 
+"""
+Basisfunction is a pair (ϕ, grad ϕ) evaluated in a quadrature point in the
+reference basis element. It also has space allocated for the gradient ∇ϕ when
+a change of coordinates is applied.
+"""
 struct BasisFunction{d,T}
     ϕ::T
     grad::SVector{d,T}
@@ -15,7 +20,8 @@ struct BasisFunction{d,T}
     BasisFunction{d,T}(ϕ, grad, ∇ϕ) where {d,T} = new(ϕ, grad, ∇ϕ)
 end
 
-BasisFunction(ϕ::T, grad::SVector{d,T}) where {d,T} = BasisFunction{d,T}(ϕ, grad, zeros(MVector{d,T}))
+BasisFunction(ϕ::T, grad::SVector{d,T}) where {d,T} = 
+  BasisFunction{d,T}(ϕ, grad, zeros(MVector{d,T}))
 
 """
 Evaluate ϕs and ∇ϕs in all quadrature points xs.
@@ -52,18 +58,22 @@ function assemble_matrix(m::Mesh{Te,Ti,Tv}, bilinear_form; quad::Type{<:QuadRule
     Nt = length(m.triangles)
     Nn = length(m.nodes)
     Nq = length(xs)
+    
+    # This is for now hard-coded...
     dof = 3
     
-    # Some stuff
+    # We'll pre-allocate the triples (is, js, vs) that are used to
+    # construct the sparse matrix A
     is = Vector{Ti}(dof * dof * Nt)
     js = Vector{Ti}(dof * dof * Nt)
     vs = Vector{Tv}(dof * dof * Nt)
 
+    # The local system matrix
     A_local = zeros(dof, dof)
 
     idx = 1
 
-    # Loop over all elements & compute local system matrix
+    # Loop over all elements & compute the local system matrix
     for triangle in m.triangles
         jac, shift = affine_map(m, triangle)
         invJac = inv(jac')
@@ -86,7 +96,7 @@ function assemble_matrix(m::Mesh{Te,Ti,Tv}, bilinear_form; quad::Type{<:QuadRule
             end
         end
 
-        # Copy stuff
+        # Copy the local matrix over to the global one
         @inbounds for i = 1:dof, j = 1:dof
             is[idx] = triangle[i]
             js[idx] = triangle[j]
@@ -95,6 +105,7 @@ function assemble_matrix(m::Mesh{Te,Ti,Tv}, bilinear_form; quad::Type{<:QuadRule
         end
     end
 
+    # Build the sparse matrix
     return dropzeros!(sparse(is, js, vs, Nn, Nn))
 end
 
@@ -103,25 +114,27 @@ Build a right-hand side
 """
 function assemble_rhs(m::Mesh{Te,Ti,Tv}, f; quad::Type{<:QuadRule} = default_quadrature(Te)) where {Te,Ti,Tv}
     # Quadrature scheme
-    ws, xs = quadrature_rule(Tri3)
-    ϕs, ∇ϕs = get_basis_funcs(quad)
+    ws, xs = quadrature_rule(quad)
+    ϕs, ∇ϕs = get_basis_funcs(Te)
     basis = evaluate_basis_funcs(ϕs, ∇ϕs, xs)
 
     Nn = length(m.nodes)
     Nq = length(xs)
     dof = 3
     
-    # Some stuff
+    # Global rhs
     b = zeros(Nn)
+
+    # Local rhs
     b_local = zeros(dof)
 
-    # Loop over all elements & compute local system matrix
+    # Loop over all elements & compute the local rhs
     for triangle in m.triangles
         jac, shift = affine_map(m, triangle)
         invJac = inv(jac')
         detJac = abs(det(jac))
 
-        # Reset local matrix
+        # Reset local rhs
         fill!(b_local, zero(Tv))
 
         # For each quad point
@@ -133,7 +146,7 @@ function assemble_rhs(m::Mesh{Te,Ti,Tv}, f; quad::Type{<:QuadRule} = default_qua
             end
         end
 
-        # Copy stuff
+        # Copy the local rhs over to the global one
         @inbounds for i = 1:dof
             b[triangle[i]] += b_local[i] * detJac
         end

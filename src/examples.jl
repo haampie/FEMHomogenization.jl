@@ -14,7 +14,7 @@ Solve a simple problem with a direct method
 """
 function example_solve(refinements::Int = 6)
     mesh, graph, interior = uniform_square(refinements)
-    bilinear_form = (u, v, x) -> dot(u.∇ϕ, v.∇ϕ) + shift * u.ϕ * v.ϕ
+    bilinear_form = (u, v, x) -> dot(u.∇ϕ, v.∇ϕ) + u.ϕ * v.ϕ
     load = x -> sqrt(x[1] * x[2])
 
     A = assemble_matrix(mesh, bilinear_form)
