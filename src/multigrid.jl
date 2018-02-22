@@ -46,7 +46,8 @@ function refine(m::Mesh{Tri,Ti,Tv}, graph::FastGraph{Ti}) where {Tv,Ti}
 end
 
 """
-Return the interpolation operator
+Return the interpolation operator for linear basis functions on triangular
+elements.
 """
 function interpolation_operator(mesh::Mesh{Te,Ti,Tv}, graph::FastGraph{Ti}) where {Te,Ti,Tv}
     # Interpolation operator

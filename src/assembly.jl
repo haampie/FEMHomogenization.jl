@@ -43,10 +43,10 @@ end
 """
 Build a sparse coefficient matrix for a given mesh and bilinear form
 """
-function assemble_matrix(m::Mesh{Te,Ti,Tv}, bilinear_form) where {Te,Ti,Tv}
+function assemble_matrix(m::Mesh{Te,Ti,Tv}, bilinear_form; quad::Type{<:QuadRule} = default_quadrature(Te)) where {Te,Ti,Tv}
     # Quadrature scheme
     ϕs, ∇ϕs = get_basis_funcs(Te)
-    ws, xs = quadrature_rule(Tri3)
+    ws, xs = quadrature_rule(quad)
     basis = evaluate_basis_funcs(ϕs, ∇ϕs, xs)
 
     Nt = length(m.triangles)
@@ -101,10 +101,10 @@ end
 """
 Build a right-hand side
 """
-function assemble_rhs(m::Mesh{Te,Ti,Tv}, f) where {Te,Ti,Tv}
+function assemble_rhs(m::Mesh{Te,Ti,Tv}, f; quad::Type{<:QuadRule} = default_quadrature(Te)) where {Te,Ti,Tv}
     # Quadrature scheme
     ws, xs = quadrature_rule(Tri3)
-    ϕs, ∇ϕs = get_basis_funcs(Te)
+    ϕs, ∇ϕs = get_basis_funcs(quad)
     basis = evaluate_basis_funcs(ϕs, ∇ϕs, xs)
 
     Nn = length(m.nodes)

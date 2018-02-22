@@ -13,3 +13,8 @@ function quadrature_rule(::Type{Tri4})
     points = (Coord{2}(1/3, 1/3), Coord{2}(1/5, 1/5), Coord{2}(1/5, 3/5), Coord{2}(3/5, 1/5))
     return weights, points
 end
+
+"""
+Maps an element type to a quadrature type
+"""
+default_quadrature(::Type{Tri}) = Tri3
