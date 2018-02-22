@@ -160,6 +160,8 @@ function example_multigrid_stuff()
     # Build the coefficient matrices
     @time As = assemble_multigrid_matrices(grids, Ps, bilinear_form)
 
+    @show size(As[end]) size(As[1])
+
     # Build a right-hand side on the finest grid
     b = assemble_rhs(grids[end].mesh, load)
     b_int = b[grids[end].interior]
