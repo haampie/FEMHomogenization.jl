@@ -1,7 +1,5 @@
 module FEMHomogenization
 
-import Base.sort, Base.isless
-
 using StaticArrays
 using WriteVTK
 
