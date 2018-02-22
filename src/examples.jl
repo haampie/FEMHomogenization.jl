@@ -39,20 +39,21 @@ struct Grid{Te,Tv,Ti}
 end
 
 """
-The full matrix A_all and the A_all[interior, interior] matrix.
+Some pre-allocated vectors for each level
 """
-struct FEMMatrix{Tv,Ti}
-    A_all::SparseMatrixCSC{Tv,Ti}
-    A_int::SparseMatrixCSC{Tv,Ti}
+struct Level{Tv,Ti}
+    A::SparseMatrixCSC{Tv,Ti}
+    P::SparseMatrixCSC{Tv,Ti}
+    x::Vector{Tv}
+    r::Vector{Tv}
+    b::Vector{Tv}
+    tmp::Vector{Tv}
 end
 
-"""
-Putting it all together
-"""
-struct Multigrid{Te,Tv,Ti}
-    grids::Vector{Grid{Te,Tv,Ti}}
-    As::Vector{FEMMatrix{Tv,Ti}}
-    Ps::Vector{SparseMatrixCSC{Tv,Ti}}
+struct Multigrid{Tf,Tv,Ti}
+    levels::Vector{Level{Tv,Ti}}
+    A_coarse::Tf
+    b_coarse::Vector{Tv}
 end
 
 """
@@ -77,12 +78,13 @@ end
 """
 Returns an array of interpolation operators from coarse grids to fine grids
 """
-function build_interpolation_operators(grids::Vector{Grid{Te,Tv,Ti}}) where {Te,Tv,Ti}
+function build_interpolation_operators(grids::Vector{Grid{Te,Tv,Ti}}; interior::Bool = false) where {Te,Tv,Ti}
     levels = length(grids)
     Ps = Vector{SparseMatrixCSC{Tv,Ti}}(levels - 1)
 
     for i = 1 : levels - 1
-        Ps[i] = interpolation_operator(grids[i].mesh, grids[i].graph)
+        P = interpolation_operator(grids[i].mesh, grids[i].graph)
+        Ps[i] = P[grids[i + 1].interior, grids[i].interior]
     end
 
     return Ps    
@@ -94,31 +96,54 @@ projections to construct the matrices on the coarser grids.
 """
 function assemble_multigrid_matrices(grids::Vector{Grid{Te,Tv,Ti}}, Ps, bilinear_form) where {Te,Tv,Ti}
     k = length(grids)
-    As = Vector{FEMMatrix{Tv,Ti}}(k)
+    As = Vector{SparseMatrixCSC{Tv,Ti}}(k)
     
     # Assemble the finest grid
     begin
         is = grids[k].interior
         A_all = assemble_matrix(grids[k].mesh, bilinear_form)
-        A_int = A_all[is, is]
-        As[k] = FEMMatrix(A_all, A_int)
+        As[k] = A_all[is, is]
     end
 
     # And then build the Galerkin projections P' * A * P
     for j = k - 1 : -1 : 1
         is = grids[j].interior
-        A_all = Ps[j]' * (As[j + 1].A_all * Ps[j])
-        A_int = A_all[is, is]
-        As[j] = FEMMatrix(A_all, A_int)
+        As[j] = dropzeros!(Ps[j]' * (As[j + 1] * Ps[j]))
     end
 
     return As
 end
 
 """
-This example refines a grid with 49 unknowns a few times
-to a grid of 261121 unknowns with an integrand dot(∇u, ∇v) and
-a load function of f(x) = 1
+This is the stuff we need for the multigrid procedure
+"""
+function initialize_multigrid(grids::Vector{Grid{Te,Tv,Ti}}, Ps, As) where {Te,Tv,Ti}
+    k = length(Ps)
+    levels = Vector{Level{Tv,Ti}}(k)
+
+    # Finer grids
+    for i = 1 : k
+        # Move this to a proper constructor
+        n = size(As[i + 1], 1)
+        x = Vector{Tv}(n)
+        r = Vector{Tv}(n)
+        b = Vector{Tv}(n)
+        tmp = Vector{Tv}(n)
+        levels[i] = Level(As[i + 1], Ps[i], x, r, b, tmp)
+    end
+
+    # Coarsest grid
+    A_coarse = factorize(As[1])
+    b_coarse = Vector{Tv}(size(As[1], 1))
+
+    return Multigrid(levels, A_coarse, b_coarse)
+end
+
+"""
+Solve the problem
+-Δu = 1.0 in Ω
+  u = 0   on ∂Ω
+using multigrid.
 """
 function example_multigrid_stuff()
     # The (integrand of) the bilinear form and the load function
@@ -131,8 +156,6 @@ function example_multigrid_stuff()
     # Refine the grid a couple times
     grids = build_multigrid_meshes(mesh, 8)
 
-    @show length(grids[end].interior)
-
     # Get the interpolation operators
     Ps = build_interpolation_operators(grids)
 
@@ -141,33 +164,55 @@ function example_multigrid_stuff()
 
     # Build a right-hand side on the finest grid
     b = assemble_rhs(grids[end].mesh, load)
-
-    # Just a bag of all the stuff we need.
-    mg = Multigrid(grids, As, Ps)
+    b_int = b[grids[end].interior]
+    
+    mg = initialize_multigrid(grids, Ps, As)
 
     # Do the multigrid solve
-    @time x = solve(mg, b)
+    x1 = zeros(b);
+    x2 = zeros(b);
+    @time x1[grids[end].interior] .= solve(mg, b_int)
+    @time x2[grids[end].interior] .= As[end] \ b_int
 
-    @time As[end].A_int \ b[grids[end].interior]
+    @show norm(x1 - x2)
 
-    return x
+    return x1, x2, mg
 end
 
 """
 Basically the W-cycle of multigrid
 """
-function solve(mg::Multigrid, b, steps::Int = 20, smooth::Int = 3)
-    levels = length(mg.grids)
+function solve(mg::Multigrid, b::Vector; rtol = 1e-6, steps::Int = 20, smooth::Int = 3)
+    finest = mg.levels[end]
+    x = zeros(finest.x)
 
-    x = rand(size(b))
-    r = b - mg.As[end].A_all * x
-    @show norm(r)
+    # Initialize with zeros
+    fill!(finest.x, 0.0)
+    copy!(finest.b, b)
+    
+    # Norm of the initial residual
+    r0 = norm(finest.b)
 
     # Do the W-cycle
     for i = 1 : steps
-        x += vcycle(mg, r, levels, smooth)
-        r = b - mg.As[end].A_all * x
-        @show norm(view(r, mg.grids[end].interior))
+        # Do a V-cycle
+        vcycle!(mg, length(mg.levels), smooth)
+
+        # Update our x
+        x .+= mg.levels[end].x
+
+        # Compute the new residual
+        A_mul_B!(finest.tmp, finest.A, x)
+        finest.b .= b .- finest.tmp
+
+        # New residual norm
+        rel_resnorm = norm(finest.b) / r0
+
+        @show (i, rel_resnorm)
+
+        if rel_resnorm < rtol
+            break
+        end
     end
 
     return x
@@ -176,35 +221,48 @@ end
 """
 A single, recursive V-cycle pass of multigrid
 """
-function vcycle(mg::Multigrid, b, level::Int, smooth::Int)
-    b_int = b[mg.grids[level].interior]
+function vcycle!(mg::Multigrid, level::Int, smooth::Int)
+    lvl = mg.levels[level]
 
-    # Direct solve on coarsest grid
-    if level == 1
-        x = mg.As[1].A_int \ b_int
-    else
-        # Otherwise pre-smooth, recurse, and post-smooth
-        x = zeros(b_int)
+    # Initial x = 0 and r = b
+    fill!(lvl.x, 0.0)
+    copy!(lvl.r, lvl.b)
 
-        # Pre-smooth
-        for i = 1 : smooth
-            x += 0.11 * (b_int - mg.As[level].A_int * x)
-        end
+    # Pre-smooth
+    for i = 1 : smooth
+        # axpy, but just use Julia broadcasting
+        lvl.x .+= 0.11 .* lvl.r
 
-        # Coarse grid correction
-        r = zeros(size(mg.As[level].A_all, 1))
-        r[mg.grids[level].interior] .= b_int - mg.As[level].A_int * x
-        update = mg.Ps[level - 1] * vcycle(mg, mg.Ps[level - 1]' * r, level - 1, smooth)
-        x .+= update[mg.grids[level].interior]
-
-        # Post-smooth
-        for i = 1 : smooth
-            x += 0.11 * (b_int - mg.As[level].A_int * x)
-        end
+        # r = b - A *x
+        A_mul_B!(lvl.tmp, lvl.A, lvl.x)
+        lvl.r .= lvl.b .- lvl.tmp
     end
 
-    correction = zeros(b)
-    correction[mg.grids[level].interior] .= x
+    # Either solve directly or recurse
+    if level == 1
+        Ac_mul_B!(mg.b_coarse, lvl.P, lvl.r)
+        A_mul_B!(lvl.tmp, lvl.P, mg.A_coarse \ mg.b_coarse)
+    else
+        # Restrict
+        Ac_mul_B!(mg.levels[level - 1].b, lvl.P, lvl.r)
 
-    return correction
+        # Solve approximately on the coarse grid
+        vcycle!(mg, level - 1, smooth)
+
+        # Interpolate
+        A_mul_B!(lvl.tmp, lvl.P, mg.levels[level - 1].x)
+    end
+
+    # Coarse grid correction
+    lvl.x .+= lvl.tmp
+
+    # Post-smooth
+    for i = 1 : smooth
+        # r = b - A *x
+        A_mul_B!(lvl.tmp, lvl.A, lvl.x)
+        lvl.r .= lvl.b .- lvl.tmp
+        lvl.x .+= 0.11 .* lvl.r
+    end
+
+    return nothing
 end
