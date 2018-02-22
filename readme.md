@@ -54,7 +54,7 @@ save_file("rhs_and_solution", mesh, Dict(
 
 Example result:
 
-![docs/example.png](Plots)
+![Plots](docs/example.png)
 
 ## Note
 
