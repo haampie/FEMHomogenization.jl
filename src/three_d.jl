@@ -71,7 +71,7 @@ function refine(mesh::Mesh{Tet,Tv,Ti}) where {Tv, Ti}
         end
 
         # Generate new tets!
-        for (a,b,c,d) in ((1,5,6,7), (2,5,8,9), (3,6,8,10), (4,7,9,10), (5,7,8,9), (6,7,8,10), (7,8,9,10), (5,6,7,8))
+        for (a,b,c,d) in ((1,5,6,7), (2,5,8,9), (3,6,8,10), (4,7,9,10), (5,6,8,9), (6,8,9,10), (6,7,9,10), (5,6,7,9))
             new_tets[tet_idx] = (edge_nodes[a], edge_nodes[b], edge_nodes[c], edge_nodes[d])
             tet_idx += 1
         end
@@ -159,11 +159,10 @@ function collect_boundary_nodes!(ptr, adj, boundary_nodes::Vector{Ti}) where {Ti
 end
 
 function tetra_division(refinements::Int = 3, ::Type{Tv} = Float64, ::Type{Ti} = Int) where {Tv,Ti}
-    nodes = SVector{3,Tv}[
-        (0.0,0.0,0.0), (1.0,0.0,0.0), (0.0,1.0,0.0), (1.0,1.0,0.0),
-        (0.0,0.0,1.0), (1.0,0.0,1.0), (0.0,1.0,1.0), (1.0,1.0,1.0)
-    ]
-    tets = SVector{4,Ti}[(1,2,3,5), (2,3,4,8), (2,5,6,8), (2,3,5,8), (3,5,7,8)]
+    # nodes = SVector{3,Tv}[(0.0,0.0,0.0), (1.0,0.0,0.0), (0.0,1.0,0.0), (1.0,1.0,0.0), (0.0,0.0,1.0), (1.0,0.0,1.0), (0.0,1.0,1.0), (1.0,1.0,1.0)]
+    # tets = SVector{4,Ti}[(1,2,3,5), (2,3,4,8), (2,5,6,8), (2,3,5,8), (3,5,7,8)]
+    nodes = SVector{3,Tv}[(0.0,0.0,0.0), (1.0,0.0,0.0), (0.0,1.0,0.0), (0.0,0.0,1.0)]
+    tets = SVector{4,Ti}[(1,2,3,4)]
     mesh = Mesh(Tet, nodes, tets)
 
     for i = 1 : refinements
@@ -171,6 +170,15 @@ function tetra_division(refinements::Int = 3, ::Type{Tv} = Float64, ::Type{Ti} =
     end
 
     return mesh
+end
+
+function put_it_together(refinements::Int)
+    mesh = tetra_division(refinements)
+    ptr, adj = do_things_with_faces(mesh)
+    sort_faces_and_stuff!(ptr, adj)
+    result = collect_boundary_nodes!(ptr, adj, Int[])
+
+    return mesh, result
 end
 
 function cube_stuff()
@@ -182,7 +190,7 @@ function cube_stuff()
     tetras = ((1,2,3,5), (2,3,4,8), (2,5,6,8), (2,3,5,8), (3,5,7,8))
 
     node_matrix = [x[i] for i = 1:3, x in nodes]
-    tetra_list = MeshCell[MeshCell(VTKCellTypes.VTK_TETRA, [t...]) for t in tetras]
+    tetra_list = [MeshCell(VTKCellTypes.VTK_TETRA, [t...]) for t in tetras]
     vtkfile = vtk_grid("tetra_test", node_matrix, tetra_list)
     # vtk_point_data(vtkfile, data, "f")
     vtk_save(vtkfile)
