@@ -2,7 +2,7 @@
 Returns the affine map from the blueprint triangle to the given
 triangle.
 """
-function affine_map(m::Mesh{Tri,Ti,Tv}, el::SVector{3,Ti}) where {Tv,Ti}
+function affine_map(m::Mesh{Tri,Tv,Ti}, el::SVector{3,Ti}) where {Tv,Ti}
     p1, p2, p3 = m.nodes[el[1]], m.nodes[el[2]], m.nodes[el[3]]
     return [p2 - p1 p3 - p1], p1
 end
@@ -49,13 +49,13 @@ end
 """
 Build a sparse coefficient matrix for a given mesh and bilinear form
 """
-function assemble_matrix(m::Mesh{Te,Ti,Tv}, bilinear_form; quad::Type{<:QuadRule} = default_quadrature(Te)) where {Te,Ti,Tv}
+function assemble_matrix(m::Mesh{Te,Tv,Ti}, bilinear_form; quad::Type{<:QuadRule} = default_quadrature(Te)) where {Te,Tv,Ti}
     # Quadrature scheme
     ϕs, ∇ϕs = get_basis_funcs(Te)
     ws, xs = quadrature_rule(quad)
     basis = evaluate_basis_funcs(ϕs, ∇ϕs, xs)
 
-    Nt = length(m.triangles)
+    Nt = length(m.elements)
     Nn = length(m.nodes)
     Nq = length(xs)
     
@@ -74,7 +74,7 @@ function assemble_matrix(m::Mesh{Te,Ti,Tv}, bilinear_form; quad::Type{<:QuadRule
     idx = 1
 
     # Loop over all elements & compute the local system matrix
-    for triangle in m.triangles
+    for triangle in m.elements
         jac, shift = affine_map(m, triangle)
         invJac = inv(jac')
         detJac = abs(det(jac))
@@ -112,7 +112,7 @@ end
 """
 Build a right-hand side
 """
-function assemble_rhs(m::Mesh{Te,Ti,Tv}, f; quad::Type{<:QuadRule} = default_quadrature(Te)) where {Te,Ti,Tv}
+function assemble_rhs(m::Mesh{Te,Tv,Ti}, f; quad::Type{<:QuadRule} = default_quadrature(Te)) where {Te,Tv,Ti}
     # Quadrature scheme
     ϕs, ∇ϕs = get_basis_funcs(Te)
     ws, xs = quadrature_rule(quad)
@@ -129,7 +129,7 @@ function assemble_rhs(m::Mesh{Te,Ti,Tv}, f; quad::Type{<:QuadRule} = default_qua
     b_local = zeros(dof)
 
     # Loop over all elements & compute the local rhs
-    for triangle in m.triangles
+    for triangle in m.elements
         jac, shift = affine_map(m, triangle)
         invJac = inv(jac')
         detJac = abs(det(jac))

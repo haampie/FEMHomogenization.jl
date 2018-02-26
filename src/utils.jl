@@ -1,4 +1,16 @@
-import Base.sort
+import Base: sort, isless
+
+function isless(a::SVector{2,T}, b::SVector{2,T}) where {T}
+    if a[1] < b[1]
+        return true
+    end
+
+    if a[1] > b[1]
+        return false
+    end
+
+    return a[2] < b[2]
+end
 
 sort(t::NTuple{2,T}) where {T} = t[1] < t[2] ? (t[1], t[2]) : (t[2], t[1])
 
@@ -11,7 +23,7 @@ Save a mesh with nodal values as a vtk file that can be used in Paraview.
 """
 function save_file(name::String, m::Mesh{Tri}, values::Dict{String,T}) where {T <: AbstractArray}
     node_matrix = [x[i] for i = 1:2, x in m.nodes]
-    triangle_list = MeshCell[MeshCell(VTKCellTypes.VTK_TRIANGLE, Vector(t)) for t in m.triangles]
+    triangle_list = MeshCell[MeshCell(VTKCellTypes.VTK_TRIANGLE, Vector(t)) for t in m.elements]
     vtkfile = vtk_grid(name, node_matrix, triangle_list)
 
     for (v_name, data) in values
@@ -23,8 +35,24 @@ end
 
 function save_file(name::String, m::Mesh{Tri}, data::T) where {T <: AbstractArray}
     node_matrix = [x[i] for i = 1:2, x in m.nodes]
-    triangle_list = MeshCell[MeshCell(VTKCellTypes.VTK_TRIANGLE, Vector(t)) for t in m.triangles]
+    triangle_list = MeshCell[MeshCell(VTKCellTypes.VTK_TRIANGLE, Vector(t)) for t in m.elements]
     vtkfile = vtk_grid(name, node_matrix, triangle_list, compress=false)
     vtk_point_data(vtkfile, data, "f")
+    vtk_save(vtkfile)
+end
+
+function save_file(name::String, m::Mesh{Tet}, data::T) where {T <: AbstractArray}
+    node_matrix = [x[i] for i = 1:3, x in m.nodes]
+    triangle_list = MeshCell[MeshCell(VTKCellTypes.VTK_TETRA, Vector(t)) for t in m.elements]
+    vtkfile = vtk_grid(name, node_matrix, triangle_list, compress=false)
+    vtk_point_data(vtkfile, data, "f")
+    vtk_save(vtkfile)
+end
+
+function save_cell_data(name::String, m::Mesh{Tet}, data::T) where {T <: AbstractArray}
+    node_matrix = [x[i] for i = 1:3, x in m.nodes]
+    triangle_list = MeshCell[MeshCell(VTKCellTypes.VTK_TETRA, Vector(t)) for t in m.elements]
+    vtkfile = vtk_grid(name, node_matrix, triangle_list, compress=false)
+    vtk_cell_data(vtkfile, data, "f")
     vtk_save(vtkfile)
 end

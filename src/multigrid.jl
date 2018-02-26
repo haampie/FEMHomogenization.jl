@@ -5,7 +5,7 @@ is split into four new triangles.
 """
 function refine(m::Mesh{Tri,Ti,Tv}, graph::FastGraph{Ti}) where {Tv,Ti}
     Nn = length(m.nodes)
-    Nt = length(m.triangles)
+    Nt = length(m.elements)
     Ne = graph.ptr[end] - 1
 
     # Each edge is split 2, so Nn + Ne is the number of nodes
@@ -27,7 +27,7 @@ function refine(m::Mesh{Tri,Ti,Tv}, graph::FastGraph{Ti}) where {Tv,Ti}
     end
 
     # Split each triangle in four smaller ones
-    @inbounds for (i, t) in enumerate(m.triangles)
+    @inbounds for (i, t) in enumerate(m.elements)
 
         # Index of the nodes on the new edges
         a = edge_index(graph, t[1], t[2]) + Nn

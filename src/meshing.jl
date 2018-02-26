@@ -2,16 +2,23 @@
 Mesh is a collection of nodes and elements connecting the nodes
 Right now the only supported element type is triangles.
 """
-struct Mesh{Te<:MeshElement,Ti,Tv}
-    nodes::Vector{SVector{2,Tv}}
-    triangles::Vector{SVector{3,Ti}}
+struct Mesh{Te<:MeshElement,Tv,Ti,d,c}
+    nodes::Vector{SVector{d,Tv}}
+    elements::Vector{SVector{c,Ti}}
 end
 
 """
 Constructor for triangles
 """
-function Mesh(Te::Type{Tri}, nodes::Vector{SVector{2,Tv}}, triangles::Vector{SVector{3,Ti}}) where {Tv,Ti}
-    Mesh{Te,Ti,Tv}(nodes, triangles)
+function Mesh(Te::Type{Tri}, nodes::Vector{SVector{2,Tv}}, tris::Vector{SVector{3,Ti}}) where {Tv,Ti}
+    Mesh{Tri,Tv,Ti,2,3}(nodes, tris)
+end
+
+"""
+Constructor for tetrahedrons
+"""
+function Mesh(Te::Type{Tet}, nodes::Vector{SVector{3,Tv}}, tets::Vector{SVector{4,Ti}}) where {Tv,Ti}
+    Mesh{Tet,Tv,Ti,3,4}(nodes, tets)
 end
 
 """
@@ -186,7 +193,7 @@ function to_graph(mesh::Mesh{Tri})
     ptr = zeros(Int, Nn + 1)
 
     # Count edges per node
-    @inbounds for triangle in mesh.triangles
+    @inbounds for triangle in mesh.elements
         for (a, b) in ((1, 2), (1, 3), (2, 3))
             idx = triangle[a] < triangle[b] ? triangle[a] : triangle[b]
             ptr[idx + 1] += 1
@@ -203,7 +210,7 @@ function to_graph(mesh::Mesh{Tri})
     adj = Vector{Int}(last(ptr) - 1)
     indices = copy(ptr)
 
-    @inbounds for triangle in mesh.triangles
+    @inbounds for triangle in mesh.elements
         for (a, b) in ((1, 2), (1, 3), (2, 3))
             from, to = sort(triangle[a], triangle[b])
             adj[indices[from]] = to

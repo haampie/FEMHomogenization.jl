@@ -33,7 +33,7 @@ end
 A geometric level of the grid
 """
 struct Grid{Te,Tv,Ti}
-    mesh::Mesh{Te,Ti,Tv}
+    mesh::Mesh{Te,Tv,Ti}
     graph::FastGraph{Ti}
     interior::Vector{Ti}
 end
@@ -60,7 +60,7 @@ end
 Refine a given mesh `mesh` a total of `levels` times and store each mesh in an
 array.
 """
-function build_multigrid_meshes(mesh::Mesh{Te,Ti,Tv}, levels::Int) where {Te,Ti,Tv}
+function build_multigrid_meshes(mesh::Mesh{Te,Tv,Ti}, levels::Int) where {Te,Ti,Tv}
     grids = Vector{Grid{Tri,Tv,Ti}}(levels)
     graph, _, interior = construct_graph_and_find_interior_nodes(mesh)
     grids[1] = Grid(mesh, graph, interior)
