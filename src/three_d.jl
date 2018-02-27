@@ -19,7 +19,14 @@ function to_graph(mesh::Mesh{Tet,Tv,Ti}) where {Tv, Ti}
     indices = copy(ptr)
 
     @inbounds for tet in mesh.elements, i = 1 : 4, j = i + 1 : 4
-        from, to = sort(tet[i], tet[j])
+        if tet[i] < tet[j]
+            from = tet[i]
+            to = tet[j]
+        else
+            from = tet[j]
+            to = tet[i]
+        end
+
         adj[indices[from]] = to
         indices[from] += 1
     end
@@ -55,6 +62,7 @@ function refine(mesh::Mesh{Tet,Tv,Ti}) where {Tv, Ti}
     edge_nodes = Vector{Ti}(10)
 
     tet_idx = 1
+    offset = Ti(Nn)
     @inbounds for tet in mesh.elements
 
         # Collect the nodes
@@ -66,7 +74,7 @@ function refine(mesh::Mesh{Tet,Tv,Ti}) where {Tv, Ti}
         # Find the mid-points (6 of them)
         idx = 5
         for i = 1 : 4, j = i + 1 : 4
-            edge_nodes[idx] = edge_index(graph, tet[i], tet[j]) + Nn
+            edge_nodes[idx] = edge_index(graph, tet[i], tet[j]) + offset
             idx += 1
         end
 
@@ -120,7 +128,7 @@ end
 
 function sort_faces_and_stuff!(ptr, adj)
     @inbounds for i = 1 : length(ptr) - 1
-        sort!(adj, ptr[i], ptr[i + 1] - 1, QuickSort, Base.Order.Forward)
+        sort!(adj, Int(ptr[i]), ptr[i + 1] - 1, QuickSort, Base.Order.Forward)
     end
 
     return ptr, adj
@@ -182,7 +190,7 @@ function put_it_together(refinements::Int)
     boundary = collect_boundary_nodes!(ptr, adj, Int[])
     interior = to_interior(boundary, length(mesh.nodes))
 
-    return mesh, ptr, adj, interior
+    return mesh, interior
 end
 
 function cube_stuff()

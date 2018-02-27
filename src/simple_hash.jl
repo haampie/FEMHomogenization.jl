@@ -1,16 +1,12 @@
 """
 Pack two UInt32's into a UInt64
 """
-function pack(a::UInt32, b::UInt32)
-    return UInt64(a) << 32 + UInt64(b)
-end
+@inline pack(a::UInt32, b::UInt32) = (UInt64(a) << 32) + UInt64(b)
 
 """
 Unpack a UInt64 into two UInt32's
 """
-function unpack(a::UInt64)
-    return UInt32(a >> 32), UInt32(a & 0x00000000ffffffff)
-end
+@inline unpack(a::UInt64) = UInt32(a >> 32), UInt32(a & 0x00000000ffffffff)
 
 function find_unique_faces(mesh::Mesh{Tet,Tv,Ti}) where {Tv,Ti}
     Nn = length(mesh.nodes)
@@ -34,13 +30,16 @@ function find_unique_faces(mesh::Mesh{Tet,Tv,Ti}) where {Tv,Ti}
 
     # To construct the graph we have to sort things.
     sorted_tet = Vector{Ti}(4)
+
     @inbounds for tet in mesh.elements
         copy!(sorted_tet, tet)
         sort!(sorted_tet, 1, 4, InsertionSort, Base.Order.Forward)
         for (a,b,c) in ((1, 2, 3), (1, 2, 4), (1, 3, 4), (2, 3, 4))
             from = sorted_tet[a]
-            adj[indices[from]] = pack(UInt32(sorted_tet[b]), UInt32(sorted_tet[c]))
-            indices[from] += 1
+
+            # cache misses?
+            adj[indices[from]] = pack(sorted_tet[b], sorted_tet[c])
+            indices[from] += 0x00000001
         end
     end
 
@@ -86,11 +85,11 @@ end
 
 function hash_bench_test(refinements::Int = 6)
     # Set up a problem.
-    mesh = tetra_division(refinements)
+    mesh = tetra_division(refinements, Float64, UInt32)
     ptr, adj = find_unique_faces(mesh)
     sort_faces_and_stuff!(ptr, adj)
-    boundary_nodes = collecting_of_boundary_stuff!(ptr, adj, Int32[])
+    boundary_nodes = collecting_of_boundary_stuff!(ptr, adj, UInt32[])
     interior_nodes = to_interior(boundary_nodes, length(mesh.nodes))
 
-    return mesh, ptr, adj, interior_nodes
+    return mesh, interior_nodes
 end

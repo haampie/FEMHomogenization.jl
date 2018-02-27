@@ -14,6 +14,20 @@ sort(t::NTuple{2,T}) where {T} = t[1] < t[2] ? (t[1], t[2]) : (t[2], t[1])
     return a < b ? (a, b) : (b, a)
 end
 
+function binary_search(v::AbstractVector, x, lo::Ti, hi::Ti) where {Ti <: Integer}
+    lo -= one(Ti)
+    hi += one(Ti)
+    @inbounds while lo < hi - one(Ti)
+        m = (lo + hi) >>> 1
+        if v[m] < x
+            lo = m
+        else
+            hi = m
+        end
+    end
+    return hi
+end
+
 """
 Save a mesh with nodal values as a vtk file that can be used in Paraview.
 """

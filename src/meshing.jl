@@ -33,9 +33,9 @@ end
 Given an edge between nodes (n1, n2), return the natural index of the edge.
 Costs are O(log b) where b is the connectivity
 """
-function edge_index(graph::FastGraph{Ti}, n1::Ti, n2::Ti) where {Ti}
+function edge_index(graph::FastGraph{Ti}, n1::Ti, n2::Ti) where {Ti <: Integer}
     n1, n2 = sort((n1, n2))
-    return searchsortedfirst(graph.adj, n2, graph.ptr[n1], graph.ptr[n1 + 1] - 1, Base.Order.Forward)
+    return binary_search(graph.adj, n2, graph.ptr[n1], graph.ptr[n1 + 1] - one(Ti))
 end
 
 """
@@ -43,7 +43,7 @@ Sort the nodes in the adjacency list
 """
 function sort_edges!(g::FastGraph)
     @inbounds for i = 1 : length(g.ptr) - 1
-        sort!(g.adj, g.ptr[i], g.ptr[i + 1] - 1, QuickSort, Base.Order.Forward)
+        sort!(g.adj, Int(g.ptr[i]), g.ptr[i + 1] - 1, QuickSort, Base.Order.Forward)
     end
 
     return g
