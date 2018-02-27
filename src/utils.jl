@@ -1,12 +1,8 @@
 import Base: sort, isless
 
 function isless(a::SVector{2,T}, b::SVector{2,T}) where {T}
-    if a[1] < b[1]
-        return true
-    end
-
-    if a[1] > b[1]
-        return false
+    if a[1] != b[1]
+        return a[1] < b[1]
     end
 
     return a[2] < b[2]

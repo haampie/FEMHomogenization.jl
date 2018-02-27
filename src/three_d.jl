@@ -52,7 +52,7 @@ function refine(mesh::Mesh{Tet,Tv,Ti}) where {Tv, Ti}
 
     ## Next, build new tetrahedrons...
     new_tets = Vector{SVector{4,Ti}}(8Nt)
-    edge_nodes = MVector{10,Ti}()
+    edge_nodes = Vector{Ti}(10)
 
     tet_idx = 1
     @inbounds for tet in mesh.elements
@@ -71,7 +71,7 @@ function refine(mesh::Mesh{Tet,Tv,Ti}) where {Tv, Ti}
         end
 
         # Generate new tets!
-        for (a,b,c,d) in ((1,5,6,7), (2,5,8,9), (3,6,8,10), (4,7,9,10), (5,6,8,9), (6,8,9,10), (6,7,9,10), (5,6,7,9))
+        for (a,b,c,d) in ((1,5,6,7), (5,2,8,9), (6,8,3,10), (7,9,10,4), (5,6,7,9), (5,6,8,9), (6,7,9,10), (6,8,9,10))
             new_tets[tet_idx] = (edge_nodes[a], edge_nodes[b], edge_nodes[c], edge_nodes[d])
             tet_idx += 1
         end
@@ -88,9 +88,9 @@ function do_things_with_faces(mesh::Mesh{Tet,Tv,Ti}) where {Tv,Ti}
     Nt = length(mesh.elements)
     ptr = zeros(Ti, Nn + 1)
     
-    for tet in mesh.elements, (a,b,c) in ((1, 2, 3), (1, 2, 4), (1, 3, 4), (2, 3, 4))
-        # assume that @assert tet[a] < tet[b] < tet[c] holds
-        ptr[tet[a] + 1] += 1
+    # Count things.
+    @inbounds for tet in mesh.elements, (a,b,c) in ((1, 2, 3), (1, 2, 4), (1, 3, 4), (2, 3, 4))
+        ptr[min(tet[a], tet[b], tet[c]) + 1] += 1
     end
 
     # Accumulate
@@ -103,10 +103,14 @@ function do_things_with_faces(mesh::Mesh{Tet,Tv,Ti}) where {Tv,Ti}
     adj = Vector{SVector{2,Ti}}(ptr[end] - 1)
     indices = copy(ptr)
 
+    # To construct the graph we have to sort things.
+    sorted_tet = Vector{Ti}(4)
     @inbounds for tet in mesh.elements
+        copy!(sorted_tet, tet)
+        sort!(sorted_tet, 1, 4, InsertionSort, Base.Order.Forward)
         for (a,b,c) in ((1, 2, 3), (1, 2, 4), (1, 3, 4), (2, 3, 4))
-            from = tet[a]
-            adj[indices[from]] = SVector{2,Ti}(tet[b], tet[c])
+            from = sorted_tet[a]
+            adj[indices[from]] = SVector{2,Ti}(sorted_tet[b], sorted_tet[c])
             indices[from] += 1
         end
     end
@@ -147,6 +151,7 @@ function collect_boundary_nodes!(ptr, adj, boundary_nodes::Vector{Ti}) where {Ti
         if idx < last
             node_belongs_to_boundary_edge = true
             push!(boundary_nodes, adj[idx][1], adj[idx][2])
+            idx += 1
         end
 
         # Finally push the current node as well if it is part of a boundary edge
@@ -159,10 +164,8 @@ function collect_boundary_nodes!(ptr, adj, boundary_nodes::Vector{Ti}) where {Ti
 end
 
 function tetra_division(refinements::Int = 3, ::Type{Tv} = Float64, ::Type{Ti} = Int) where {Tv,Ti}
-    # nodes = SVector{3,Tv}[(0.0,0.0,0.0), (1.0,0.0,0.0), (0.0,1.0,0.0), (1.0,1.0,0.0), (0.0,0.0,1.0), (1.0,0.0,1.0), (0.0,1.0,1.0), (1.0,1.0,1.0)]
-    # tets = SVector{4,Ti}[(1,2,3,5), (2,3,4,8), (2,5,6,8), (2,3,5,8), (3,5,7,8)]
-    nodes = SVector{3,Tv}[(0.0,0.0,0.0), (1.0,0.0,0.0), (0.0,1.0,0.0), (0.0,0.0,1.0)]
-    tets = SVector{4,Ti}[(1,2,3,4)]
+    nodes = SVector{3,Tv}[(0.0,0.0,0.0), (1.0,0.0,0.0), (0.0,1.0,0.0), (1.0,1.0,0.0), (0.0,0.0,1.0), (1.0,0.0,1.0), (0.0,1.0,1.0), (1.0,1.0,1.0)]
+    tets = SVector{4,Ti}[(1,2,3,5), (2,3,4,8), (2,5,6,8), (2,3,5,8), (3,5,7,8)]
     mesh = Mesh(Tet, nodes, tets)
 
     for i = 1 : refinements
@@ -176,9 +179,10 @@ function put_it_together(refinements::Int)
     mesh = tetra_division(refinements)
     ptr, adj = do_things_with_faces(mesh)
     sort_faces_and_stuff!(ptr, adj)
-    result = collect_boundary_nodes!(ptr, adj, Int[])
+    boundary = collect_boundary_nodes!(ptr, adj, Int[])
+    interior = to_interior(boundary, length(mesh.nodes))
 
-    return mesh, result
+    return mesh, ptr, adj, interior
 end
 
 function cube_stuff()

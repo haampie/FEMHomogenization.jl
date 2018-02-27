@@ -14,5 +14,6 @@ include("utils.jl")
 include("examples.jl")
 include("example_homogenization.jl")
 include("three_d.jl")
+include("simple_hash.jl")
 
 end
