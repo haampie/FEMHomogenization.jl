@@ -14,6 +14,11 @@ sort(t::NTuple{2,T}) where {T} = t[1] < t[2] ? (t[1], t[2]) : (t[2], t[1])
     return a < b ? (a, b) : (b, a)
 end
 
+"""
+    binary_search(v, x, lo, hi)
+
+Return the index of the first occurence of x in v[lo:hi]
+"""
 function binary_search(v::AbstractVector, x, lo::Ti, hi::Ti) where {Ti <: Integer}
     lo -= one(Ti)
     hi += one(Ti)
@@ -27,6 +32,66 @@ function binary_search(v::AbstractVector, x, lo::Ti, hi::Ti) where {Ti <: Intege
     end
     return hi
 end
+
+"""
+    complement(sorted_vec, n)
+
+Returns a sorted vector of the numbers 1:n \ sorted_vec. Useful to identify
+the interior nodes if the boundary nodes are known.
+"""
+function complement(boundary_nodes::Vector{Ti}, n::Integer) where {Ti}
+    interior_nodes = Vector{Ti}(n - length(boundary_nodes))
+    num = 1
+    idx = 1
+
+    @inbounds for i in boundary_nodes
+        while num < i
+            interior_nodes[idx] = num
+            num += 1
+            idx += 1
+        end
+        num += 1
+    end
+
+    @inbounds for i = num : n
+        interior_nodes[idx] = i
+        idx += 1
+    end
+
+    return interior_nodes
+end
+
+"""
+Remove duplicate entries from a sorted vector. Resizes the vector as well.
+"""
+function remove_duplicates!(vec::Vector)
+    n = length(vec)
+
+    # Can only be unique
+    n ≤ 1 && return vec
+
+    # Discard repeated entries
+    slow = 1
+    @inbounds for fast = 2 : n
+        vec[slow] == vec[fast] && continue
+        slow += 1
+        vec[slow] = vec[fast]
+    end
+
+    # Return the resized vector with unique elements
+    return resize!(vec, slow)
+end
+
+"""
+Pack two UInt32's into a UInt64
+"""
+@inline pack(a::UInt32, b::UInt32) = (UInt64(a) << 32) + UInt64(b)
+
+"""
+Unpack a UInt64 into two UInt32's
+"""
+@inline unpack(a::UInt64) = UInt32(a >> 32), UInt32(a & 0x00000000ffffffff)
+
 
 """
 Save a mesh with nodal values as a vtk file that can be used in Paraview.

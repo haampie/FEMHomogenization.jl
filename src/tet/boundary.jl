@@ -1,17 +1,7 @@
 """
-Pack two UInt32's into a UInt64
-"""
-@inline pack(a::UInt32, b::UInt32) = (UInt64(a) << 32) + UInt64(b)
-
-"""
-Unpack a UInt64 into two UInt32's
-"""
-@inline unpack(a::UInt64) = UInt32(a >> 32), UInt32(a & 0x00000000ffffffff)
-
-"""
 Two tricks: counting sort + packing of two UInt32's into one UInt64
 """
-function list_all_faces(mesh::Mesh{Tet,Tv,UInt32}) where {Tv}
+function list_faces(mesh::Mesh{Tet,Tv,UInt32}) where {Tv}
     Nn = length(mesh.nodes)
     Nt = length(mesh.elements)
     ptr = zeros(UInt32, Nn + 1)
@@ -45,11 +35,12 @@ function list_all_faces(mesh::Mesh{Tet,Tv,UInt32}) where {Tv}
         end
     end
 
-    return ptr, adj
+    return sort_faces!(ptr, adj)
 end
 
-function collect_boundary_nodes!(ptr::Vector{UInt32}, adj::Vector{UInt64}, boundary_nodes::Vector{UInt32})
+function find_boundary_nodes(ptr::Vector{UInt32}, adj::Vector{UInt64})
     idx = one(UInt32)
+    boundary_nodes = Vector{UInt32}()
 
     const ONE = one(UInt32)
     const TWO = ONE + ONE
@@ -100,10 +91,6 @@ end
 Find interior nodes of a tetrahedron mesh
 """
 function find_interior_nodes(mesh::Mesh{Tet,Tv,UInt32}) where {Tv}
-    ptr, adj = list_all_faces(mesh)
-    sort_faces!(ptr, adj)
-    boundary_nodes = collect_boundary_nodes!(ptr, adj, UInt32[])
-    interior_nodes = to_interior(boundary_nodes, length(mesh.nodes))
-
-    return interior_nodes
+    boundary_nodes = find_boundary_nodes(list_faces(mesh)...)
+    return complement(boundary_nodes, length(mesh.nodes))
 end

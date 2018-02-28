@@ -29,32 +29,12 @@ function example_solve(refinements::Int = 6)
     return mesh, x
 end
 
-function example_3d_assembly(refinements::Int = 5)
-    mesh, interior = unit_cube(refinements)
-    bilinear_form = (u, v, x) -> dot(u.∇ϕ, v.∇ϕ) + u.ϕ * v.ϕ
-    load = x -> sqrt(x[1] * x[2] * x[3])
-
-    A = assemble_matrix(mesh, bilinear_form)
-    b = assemble_rhs(mesh, load)
-    x = zeros(b)
-
-    A_int = A[interior, interior]
-    b_int = b[interior]
-
-    @inbounds x[interior] .= A_int \ b_int
-
-    return save_file("results", mesh, Dict(
-        "x" => x,
-        "f" => load.(mesh.nodes),
-    ))
-end
-
 """
 A geometric level of the grid
 """
 struct Grid{Te,Tv,Ti}
     mesh::Mesh{Te,Tv,Ti}
-    graph::FastGraph{Ti}
+    graph::Graph{Ti}
     interior::Vector{Ti}
 end
 

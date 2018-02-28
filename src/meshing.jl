@@ -8,23 +8,9 @@ struct Mesh{Te<:MeshElement,Tv,Ti,d,c}
 end
 
 """
-Constructor for triangles
-"""
-function Mesh(Te::Type{Tri}, nodes::Vector{SVector{2,Tv}}, tris::Vector{SVector{3,Ti}}) where {Tv,Ti}
-    Mesh{Tri,Tv,Ti,2,3}(nodes, tris)
-end
-
-"""
-Constructor for tetrahedrons
-"""
-function Mesh(Te::Type{Tet}, nodes::Vector{SVector{3,Tv}}, tets::Vector{SVector{4,Ti}}) where {Tv,Ti}
-    Mesh{Tet,Tv,Ti,3,4}(nodes, tets)
-end
-
-"""
 Adjacency list with data structure like SparseMatrixCSC's colptr and rowval.
 """
-struct FastGraph{Ti}
+struct Graph{Ti}
     ptr::Vector{Ti}
     adj::Vector{Ti}
 end
@@ -33,7 +19,7 @@ end
 Given an edge between nodes (n1, n2), return the natural index of the edge.
 Costs are O(log b) where b is the connectivity
 """
-function edge_index(graph::FastGraph{Ti}, n1::Ti, n2::Ti) where {Ti <: Integer}
+function edge_index(graph::Graph{Ti}, n1::Ti, n2::Ti) where {Ti <: Integer}
     n1, n2 = sort((n1, n2))
     return binary_search(graph.adj, n2, graph.ptr[n1], graph.ptr[n1 + 1] - one(Ti))
 end
@@ -41,7 +27,7 @@ end
 """
 Sort the nodes in the adjacency list
 """
-function sort_edges!(g::FastGraph)
+function sort_edges!(g::Graph)
     @inbounds for i = 1 : length(g.ptr) - 1
         sort!(g.adj, Int(g.ptr[i]), g.ptr[i + 1] - 1, QuickSort, Base.Order.Forward)
     end
@@ -54,8 +40,9 @@ Returns a sorted list of nodes on the boundary of the domain.
 Complexity is O(E + B log B) where E is the number of edges and B the number
 of nodes on the boundary.
 """
-function collect_boundary_nodes!(g::FastGraph{Ti}, boundary_nodes::Vector{Ti}) where {Ti}
+function find_boundary_nodes(g::Graph{Ti}) where {Ti}
     idx = 1
+    boundary_nodes = Vector{Ti}()
 
     # Loop over all the nodes
     @inbounds for node = 1 : length(g.ptr) - 1
@@ -98,36 +85,9 @@ function collect_boundary_nodes!(g::FastGraph{Ti}, boundary_nodes::Vector{Ti}) w
 end
 
 """
-Returns a sorted list of nodes in the interior of the domain Complexity is O(N) 
-where N is the number of nodes
-"""
-function to_interior(boundary_nodes::Vector{Ti}, n::Integer) where {Ti}
-    interior_nodes = Vector{Ti}(n - length(boundary_nodes))
-    num = 1
-    idx = 1
-
-    @inbounds for i in boundary_nodes
-        while num < i
-            interior_nodes[idx] = num
-            num += 1
-            idx += 1
-        end
-        num += 1
-    end
-
-    @inbounds for i = num : n
-        interior_nodes[idx] = i
-        idx += 1
-    end
-
-    return interior_nodes
-end
-
-
-"""
 Remove duplicate edges from an adjacency list with sorted edges
 """
-function remove_duplicates!(g::FastGraph)
+function remove_duplicates!(g::Graph)
     Nn = length(g.ptr) - 1
     slow = 0
     fast = 1
@@ -161,153 +121,4 @@ function remove_duplicates!(g::FastGraph)
     resize!(g.adj, slow)
 
     return g
-end
-
-"""
-Remove duplicate entries from a sorted vector. Resizes the vector as well.
-"""
-function remove_duplicates!(vec::Vector)
-    n = length(vec)
-
-    # Can only be unique
-    n ≤ 1 && return vec
-
-    # Discard repeated entries
-    slow = 1
-    @inbounds for fast = 2 : n
-        vec[slow] == vec[fast] && continue
-        slow += 1
-        vec[slow] = vec[fast]
-    end
-
-    # Return the resized vector with unique elements
-    return resize!(vec, slow)
-end
-
-"""
-Construct the adjacency list much like the colptr and rowval arrays in the 
-SparseMatrixCSC type
-"""
-function to_graph(mesh::Mesh{Tri})
-    Nn = length(mesh.nodes)
-    ptr = zeros(Int, Nn + 1)
-
-    # Count edges per node
-    @inbounds for triangle in mesh.elements
-        for (a, b) in ((1, 2), (1, 3), (2, 3))
-            idx = triangle[a] < triangle[b] ? triangle[a] : triangle[b]
-            ptr[idx + 1] += 1
-        end
-    end
-
-    # Accumulate
-    ptr[1] = 1
-    @inbounds for i = 1 : Nn
-        ptr[i + 1] += ptr[i]
-    end
-
-    # Build adjacency list
-    adj = Vector{Int}(last(ptr) - 1)
-    indices = copy(ptr)
-
-    @inbounds for triangle in mesh.elements
-        for (a, b) in ((1, 2), (1, 3), (2, 3))
-            from, to = sort(triangle[a], triangle[b])
-            adj[indices[from]] = to
-            indices[from] += 1
-        end
-    end
-
-    FastGraph(ptr, adj)
-end
-
-"""
-Construct an edge graph for the tetrahedron mesh
-"""
-function to_graph(mesh::Mesh{Tet,Tv,UInt32}) where {Tv}
-    Nn = length(mesh.nodes)
-    ptr = zeros(UInt32, Nn + 1)
-
-    # Count edges per node
-    @inbounds for tet in mesh.elements, i = 1 : 4, j = i + 1 : 4
-        idx = tet[i] < tet[j] ? tet[i] : tet[j]
-        ptr[idx + one(UInt32)] += one(UInt32)
-    end
-
-    # Accumulate
-    ptr[1] = 1
-    @inbounds for i = 1 : Nn
-        ptr[i + 1] += ptr[i]
-    end
-
-    # Build adjacency list
-    adj = Vector{UInt32}(ptr[end] - 1)
-    indices = copy(ptr)
-
-    @inbounds for tet in mesh.elements, i = 1 : 4, j = i + 1 : 4
-        if tet[i] < tet[j]
-            from = tet[i]
-            to = tet[j]
-        else
-            from = tet[j]
-            to = tet[i]
-        end
-
-        adj[indices[from]] = to
-        indices[from] += 1
-    end
-
-    FastGraph(ptr, adj)
-end
-
-
-"""
-Build the graph and at the same time find the boundary & interior nodes
-"""
-function construct_graph_and_find_interior_nodes(mesh::Mesh)
-    graph = to_graph(mesh)
-    sort_edges!(graph)
-    boundary = collect_boundary_nodes!(graph, Int[])
-    interior = to_interior(boundary, length(mesh.nodes))
-    remove_duplicates!(graph)
-
-    graph, boundary, interior
-end
-
-"""
-Divide the unit square into a mesh of triangles
-"""
-function unit_square(refinements::Int = 4)
-    nodes = SVector{2,Float64}[(0, 0), (1, 0), (1, 1), (0, 1)]
-    triangles = SVector{3,Int64}[(1, 2, 3), (1, 4, 3)]
-    mesh = Mesh(Tri, nodes, triangles)
-
-    graph, boundary, interior = construct_graph_and_find_interior_nodes(mesh)
-
-    for i = 1 : refinements
-        mesh = refine(mesh, graph)
-        graph, boundary, interior = construct_graph_and_find_interior_nodes(mesh)
-    end
-
-    return mesh, graph, interior
-end
-
-
-"""
-Construct a mesh on the unit cube
-"""
-function unit_cube(refinements::Int = 3, ::Type{Tv} = Float64) where {Tv}
-    nodes = SVector{3,Tv}[(0,0,0), (1,0,0), (0,1,0), (1,1,0), 
-                          (0,0,1), (1,0,1), (0,1,1), (1,1,1)]
-
-    tets = SVector{4,UInt32}[(1,2,3,5), (2,3,4,8), (2,5,6,8), 
-                             (2,3,5,8), (3,5,7,8)]
-
-    mesh = Mesh(Tet, nodes, tets)
-
-    for i = 1 : refinements
-        mesh = refine(mesh)
-    end
-
-    return mesh, find_interior_nodes(mesh)
 end

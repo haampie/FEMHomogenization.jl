@@ -1,38 +1,45 @@
 abstract type QuadRule end
-abstract type Tri3 <: QuadRule end
-abstract type Tri4 <: QuadRule end
-abstract type Tet4 <: QuadRule end
-abstract type Tet5 <: QuadRule end
-
-function quadrature_rule(::Type{Tri3})
-    weights = (1/6, 1/6, 1/6)
-    points = (Coord{2}(0.0, 0.5), Coord{2}(0.5, 0.0), Coord{2}(0.5, 0.5))
-    return weights, points
-end
-
-function quadrature_rule(::Type{Tri4})
-    weights = (-27/96, 25/96, 25/96, 25/96)
-    points = (Coord{2}(1/3, 1/3), Coord{2}(1/5, 1/5), Coord{2}(1/5, 3/5), Coord{2}(3/5, 1/5))
-    return weights, points
-end
-
-function quadrature_rule(::Type{Tet4})
-    weights = (1/24, 1/24, 1/24, 1/24)
-    a, b = 0.5854101966249685, 0.1381966011250105
-    points = (Coord{3}(a, b, b), Coord{3}(b,a,b), Coord{3}(b,b,a), Coord{3}(b,b,b))
-
-    return weights, points
-end
-
-function quadrature_rule(::Type{Tet5})
-    weights = (-2/15, 3/40, 3/40, 3/40, 3/40)
-    points = (Coord{3}(1/4,1/4,1/4), Coord{3}(1/2,1/6,1/6), Coord{3}(1/6,1/6,1/6), Coord{3}(1/6,1/6,1/2), Coord{3}(1/6,1/2,1/6))
-    
-    return weights, points
-end
 
 """
-Maps an element type to a quadrature type
+Get the default quadrature rule for an element type
 """
-default_quadrature(::Type{Tri}) = Tri3
-default_quadrature(::Type{Tet}) = Tet4
+default_quadrature(::Type{<:MeshElement}) = throw("Not implemented")
+
+"""
+Basisfunction is a pair (ϕ, grad ϕ) evaluated in a quadrature point in the
+reference basis element. It also has space allocated for the gradient ∇ϕ when
+a change of coordinates is applied.
+"""
+struct BasisFunction{d,T}
+    ϕ::T
+    grad::SVector{d,T}
+    ∇ϕ::MVector{d,T}
+
+    BasisFunction{d,T}(ϕ, grad, ∇ϕ) where {d,T} = new(ϕ, grad, ∇ϕ)
+end
+
+BasisFunction(ϕ::T, grad::SVector{d,T}) where {d,T} = 
+  BasisFunction{d,T}(ϕ, grad, zeros(MVector{d,T}))
+
+"""
+Evaluate ϕs and ∇ϕs in all quadrature points xs.
+"""
+function evaluate_basis_funcs(ϕs, ∇ϕs, xs)
+    d = length(xs[1])
+    n = length(xs)
+    basis = Vector{Vector{BasisFunction{d,Float64}}}(n)
+
+    # Go over each quad point x
+    for (i, x) in enumerate(xs)
+        inner = Vector{BasisFunction{d,Float64}}(n)
+
+        # Evaluate ϕ and ∇ϕ in x
+        for (j, (ϕ, ∇ϕ)) in enumerate(zip(ϕs, ∇ϕs))
+            inner[j] = BasisFunction(ϕ(x), SVector(∇ϕ(x)))
+        end
+
+        basis[i] = inner
+    end
+
+    return basis
+end
