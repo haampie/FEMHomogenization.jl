@@ -54,6 +54,7 @@ struct Multigrid{Tf,Tv,Ti}
     levels::Vector{Level{Tv,Ti}}
     A_coarse::Tf
     b_coarse::Vector{Tv}
+    ωs::Vector{Tv}
 end
 
 """
@@ -61,7 +62,7 @@ Refine a given mesh `mesh` a total of `levels` times and store each mesh in an
 array.
 """
 function build_multigrid_meshes(mesh::Mesh{Te,Tv,Ti}, levels::Int) where {Te,Ti,Tv}
-    grids = Vector{Grid{Tri,Tv,Ti}}(levels)
+    grids = Vector{Grid{Te,Tv,Ti}}(levels)
     graph, _, interior = construct_graph_and_find_interior_nodes(mesh)
     grids[1] = Grid(mesh, graph, interior)
 
@@ -80,7 +81,7 @@ Returns an array of interpolation operators from coarse grids to fine grids
 """
 function build_interpolation_operators(grids::Vector{Grid{Te,Tv,Ti}}; interior::Bool = false) where {Te,Tv,Ti}
     levels = length(grids)
-    Ps = Vector{SparseMatrixCSC{Tv,Ti}}(levels - 1)
+    Ps = Vector{SparseMatrixCSC{Tv,Int}}(levels - 1)
 
     for i = 1 : levels - 1
         P = interpolation_operator(grids[i].mesh, grids[i].graph)
@@ -96,7 +97,7 @@ projections to construct the matrices on the coarser grids.
 """
 function assemble_multigrid_matrices(grids::Vector{Grid{Te,Tv,Ti}}, Ps, bilinear_form) where {Te,Tv,Ti}
     k = length(grids)
-    As = Vector{SparseMatrixCSC{Tv,Ti}}(k)
+    As = Vector{SparseMatrixCSC{Tv,Int}}(k)
     
     # Assemble the finest grid
     A_all = assemble_matrix(grids[k].mesh, bilinear_form)
@@ -115,9 +116,9 @@ end
 """
 This is the stuff we need for the multigrid procedure
 """
-function initialize_multigrid(grids::Vector{Grid{Te,Tv,Ti}}, Ps, As) where {Te,Tv,Ti}
+function initialize_multigrid(grids::Vector{Grid{Te,Tv,Ti}}, Ps::Vector{SparseMatrixCSC{Tv,Tii}}, As, ωs = []) where {Te,Tv,Ti,Tii}
     k = length(Ps)
-    levels = Vector{Level{Tv,Ti}}(k)
+    levels = Vector{Level{Tv,Tii}}(k)
 
     # Finer grids
     for i = 1 : k
@@ -134,7 +135,7 @@ function initialize_multigrid(grids::Vector{Grid{Te,Tv,Ti}}, Ps, As) where {Te,T
     A_coarse = factorize(As[1])
     b_coarse = Vector{Tv}(size(As[1], 1))
 
-    return Multigrid(levels, A_coarse, b_coarse)
+    return Multigrid(levels, A_coarse, b_coarse, ωs)
 end
 
 """
@@ -231,7 +232,7 @@ function vcycle!(mg::Multigrid, level::Int, smooth::Int)
     # Pre-smooth
     for i = 1 : smooth
         # axpy, but just use Julia broadcasting
-        lvl.x .+= 0.2 .* lvl.r
+        lvl.x .+= mg.ωs[level] .* lvl.r
 
         # r = b - A *x
         A_mul_B!(lvl.tmp, lvl.A, lvl.x)
@@ -261,7 +262,7 @@ function vcycle!(mg::Multigrid, level::Int, smooth::Int)
         # r = b - A *x
         A_mul_B!(lvl.tmp, lvl.A, lvl.x)
         lvl.r .= lvl.b .- lvl.tmp
-        lvl.x .+= 0.2 .* lvl.r
+        lvl.x .+= mg.ωs[level] .* lvl.r
     end
 
     return nothing
