@@ -51,18 +51,22 @@ function save_file(name::String, m::Mesh{Tri}, data::T) where {T <: AbstractArra
     vtk_save(vtkfile)
 end
 
+function save_file(name::String, m::Mesh{Tet}, values::Dict{String,T}) where {T <: AbstractArray}
+    node_matrix = [x[i] for i = 1:3, x in m.nodes]
+    triangle_list = MeshCell[MeshCell(VTKCellTypes.VTK_TETRA, Vector(t)) for t in m.elements]
+    vtkfile = vtk_grid(name, node_matrix, triangle_list, compress=false)
+    
+    for (v_name, data) in values
+        vtk_point_data(vtkfile, data, v_name)
+    end
+
+    vtk_save(vtkfile)
+end
+
 function save_file(name::String, m::Mesh{Tet}, data::T) where {T <: AbstractArray}
     node_matrix = [x[i] for i = 1:3, x in m.nodes]
     triangle_list = MeshCell[MeshCell(VTKCellTypes.VTK_TETRA, Vector(t)) for t in m.elements]
     vtkfile = vtk_grid(name, node_matrix, triangle_list, compress=false)
     vtk_point_data(vtkfile, data, "f")
-    vtk_save(vtkfile)
-end
-
-function save_cell_data(name::String, m::Mesh{Tet}, data::T) where {T <: AbstractArray}
-    node_matrix = [x[i] for i = 1:3, x in m.nodes]
-    triangle_list = MeshCell[MeshCell(VTKCellTypes.VTK_TETRA, Vector(t)) for t in m.elements]
-    vtkfile = vtk_grid(name, node_matrix, triangle_list, compress=false)
-    vtk_cell_data(vtkfile, data, "f")
     vtk_save(vtkfile)
 end

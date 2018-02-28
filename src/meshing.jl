@@ -222,6 +222,46 @@ function to_graph(mesh::Mesh{Tri})
 end
 
 """
+Construct an edge graph for the tetrahedron mesh
+"""
+function to_graph(mesh::Mesh{Tet,Tv,UInt32}) where {Tv}
+    Nn = length(mesh.nodes)
+    ptr = zeros(UInt32, Nn + 1)
+
+    # Count edges per node
+    @inbounds for tet in mesh.elements, i = 1 : 4, j = i + 1 : 4
+        idx = tet[i] < tet[j] ? tet[i] : tet[j]
+        ptr[idx + one(UInt32)] += one(UInt32)
+    end
+
+    # Accumulate
+    ptr[1] = 1
+    @inbounds for i = 1 : Nn
+        ptr[i + 1] += ptr[i]
+    end
+
+    # Build adjacency list
+    adj = Vector{UInt32}(ptr[end] - 1)
+    indices = copy(ptr)
+
+    @inbounds for tet in mesh.elements, i = 1 : 4, j = i + 1 : 4
+        if tet[i] < tet[j]
+            from = tet[i]
+            to = tet[j]
+        else
+            from = tet[j]
+            to = tet[i]
+        end
+
+        adj[indices[from]] = to
+        indices[from] += 1
+    end
+
+    FastGraph(ptr, adj)
+end
+
+
+"""
 Build the graph and at the same time find the boundary & interior nodes
 """
 function construct_graph_and_find_interior_nodes(mesh::Mesh)
@@ -250,4 +290,24 @@ function unit_square(refinements::Int = 4)
     end
 
     return mesh, graph, interior
+end
+
+
+"""
+Construct a mesh on the unit cube
+"""
+function unit_cube(refinements::Int = 3, ::Type{Tv} = Float64) where {Tv}
+    nodes = SVector{3,Tv}[(0,0,0), (1,0,0), (0,1,0), (1,1,0), 
+                          (0,0,1), (1,0,1), (0,1,1), (1,1,1)]
+
+    tets = SVector{4,UInt32}[(1,2,3,5), (2,3,4,8), (2,5,6,8), 
+                             (2,3,5,8), (3,5,7,8)]
+
+    mesh = Mesh(Tet, nodes, tets)
+
+    for i = 1 : refinements
+        mesh = refine(mesh)
+    end
+
+    return mesh, find_interior_nodes(mesh)
 end

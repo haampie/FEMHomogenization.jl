@@ -1,104 +1,25 @@
-function to_graph(mesh::Mesh{Tet,Tv,Ti}) where {Tv, Ti}
-    Nn = length(mesh.nodes)
-    ptr = zeros(Ti, Nn + 1)
-
-    # Count edges per node
-    @inbounds for tet in mesh.elements, i = 1 : 4, j = i + 1 : 4
-        idx = tet[i] < tet[j] ? tet[i] : tet[j]
-        ptr[idx + 1] += 1
-    end
-
-    # Accumulate
-    ptr[1] = 1
-    @inbounds for i = 1 : Nn
-        ptr[i + 1] += ptr[i]
-    end
-
-    # Build adjacency list
-    adj = Vector{Ti}(ptr[end] - 1)
-    indices = copy(ptr)
-
-    @inbounds for tet in mesh.elements, i = 1 : 4, j = i + 1 : 4
-        if tet[i] < tet[j]
-            from = tet[i]
-            to = tet[j]
-        else
-            from = tet[j]
-            to = tet[i]
-        end
-
-        adj[indices[from]] = to
-        indices[from] += 1
-    end
-
-    FastGraph(ptr, adj)
-end
-
-function refine(mesh::Mesh{Tet,Tv,Ti}) where {Tv, Ti}
-    Nn = length(mesh.nodes)
-    Nt = length(mesh.elements)
-
-    # Collect all edges
-    graph = to_graph(mesh)
-    remove_duplicates!(sort_edges!(graph))
-
-    Ne = length(graph.adj)
-
-    ### Refine the grid.
-    new_nodes = Vector{SVector{3,Tv}}(Nn + Ne)
-    copy!(new_nodes, mesh.nodes)
-
-    ## Split the edges
-    @inbounds begin
-        idx = Nn + 1
-        for from = 1 : Nn, to = graph.ptr[from] : graph.ptr[from + 1] - 1
-            new_nodes[idx] = (mesh.nodes[from] + mesh.nodes[graph.adj[to]]) / 2
-            idx += 1
-        end
-    end
-
-    ## Next, build new tetrahedrons...
-    new_tets = Vector{SVector{4,Ti}}(8Nt)
-    edge_nodes = Vector{Ti}(10)
-
-    tet_idx = 1
-    offset = Ti(Nn)
-    @inbounds for tet in mesh.elements
-
-        # Collect the nodes
-        edge_nodes[1] = tet[1]
-        edge_nodes[2] = tet[2]
-        edge_nodes[3] = tet[3]
-        edge_nodes[4] = tet[4]
-
-        # Find the mid-points (6 of them)
-        idx = 5
-        for i = 1 : 4, j = i + 1 : 4
-            edge_nodes[idx] = edge_index(graph, tet[i], tet[j]) + offset
-            idx += 1
-        end
-
-        # Generate new tets!
-        for (a,b,c,d) in ((1,5,6,7), (5,2,8,9), (6,8,3,10), (7,9,10,4), (5,6,7,9), (5,6,8,9), (6,7,9,10), (6,8,9,10))
-            new_tets[tet_idx] = (edge_nodes[a], edge_nodes[b], edge_nodes[c], edge_nodes[d])
-            tet_idx += 1
-        end
-    end
-
-    return Mesh(Tet, new_nodes, new_tets)
-end
+"""
+Pack two UInt32's into a UInt64
+"""
+@inline pack(a::UInt32, b::UInt32) = (UInt64(a) << 32) + UInt64(b)
 
 """
-Detect the interior stuff
+Unpack a UInt64 into two UInt32's
 """
-function do_things_with_faces(mesh::Mesh{Tet,Tv,Ti}) where {Tv,Ti}
+@inline unpack(a::UInt64) = UInt32(a >> 32), UInt32(a & 0x00000000ffffffff)
+
+"""
+Two tricks: counting sort + packing of two UInt32's into one UInt64
+"""
+function list_all_faces(mesh::Mesh{Tet,Tv,UInt32}) where {Tv}
     Nn = length(mesh.nodes)
     Nt = length(mesh.elements)
-    ptr = zeros(Ti, Nn + 1)
+    ptr = zeros(UInt32, Nn + 1)
+    const ONE = one(UInt32)
     
     # Count things.
     @inbounds for tet in mesh.elements, (a,b,c) in ((1, 2, 3), (1, 2, 4), (1, 3, 4), (2, 3, 4))
-        ptr[min(tet[a], tet[b], tet[c]) + 1] += 1
+        ptr[min(tet[a], tet[b], tet[c]) + ONE] += ONE
     end
 
     # Accumulate
@@ -108,34 +29,30 @@ function do_things_with_faces(mesh::Mesh{Tet,Tv,Ti}) where {Tv,Ti}
     end
 
     # Build adjacency list
-    adj = Vector{SVector{2,Ti}}(ptr[end] - 1)
+    adj = Vector{UInt64}(ptr[end] - 1)
     indices = copy(ptr)
 
     # To construct the graph we have to sort things.
-    sorted_tet = Vector{Ti}(4)
+    sorted_tet = Vector{UInt32}(4)
+
     @inbounds for tet in mesh.elements
         copy!(sorted_tet, tet)
         sort!(sorted_tet, 1, 4, InsertionSort, Base.Order.Forward)
         for (a,b,c) in ((1, 2, 3), (1, 2, 4), (1, 3, 4), (2, 3, 4))
             from = sorted_tet[a]
-            adj[indices[from]] = SVector{2,Ti}(sorted_tet[b], sorted_tet[c])
-            indices[from] += 1
+            adj[indices[from]] = pack(sorted_tet[b], sorted_tet[c])
+            indices[from] += ONE
         end
     end
 
     return ptr, adj
 end
 
-function sort_faces_and_stuff!(ptr, adj)
-    @inbounds for i = 1 : length(ptr) - 1
-        sort!(adj, Int(ptr[i]), ptr[i + 1] - 1, QuickSort, Base.Order.Forward)
-    end
+function collect_boundary_nodes!(ptr::Vector{UInt32}, adj::Vector{UInt64}, boundary_nodes::Vector{UInt32})
+    idx = one(UInt32)
 
-    return ptr, adj
-end
-
-function collect_boundary_nodes!(ptr, adj, boundary_nodes::Vector{Ti}) where {Ti}
-    idx = 1
+    const ONE = one(UInt32)
+    const TWO = ONE + ONE
 
     # Loop over all the nodes
     @inbounds for node = 1 : length(ptr) - 1
@@ -144,13 +61,13 @@ function collect_boundary_nodes!(ptr, adj, boundary_nodes::Vector{Ti}) where {Ti
         # Detect whether this nodes belongs to at least one boundary edge
         node_belongs_to_boundary_edge = false
 
-        while idx + 1 < last
-            if adj[idx] == adj[idx + 1]
-                idx += 2
+        while idx + ONE < last
+            if adj[idx] == adj[idx + ONE]
+                idx += TWO
             else
                 node_belongs_to_boundary_edge = true
-                push!(boundary_nodes, adj[idx][1], adj[idx][2])
-                idx += 1
+                push!(boundary_nodes, unpack(adj[idx])...)
+                idx += ONE
             end
         end
 
@@ -158,8 +75,8 @@ function collect_boundary_nodes!(ptr, adj, boundary_nodes::Vector{Ti}) where {Ti
         # part of the boundary.
         if idx < last
             node_belongs_to_boundary_edge = true
-            push!(boundary_nodes, adj[idx][1], adj[idx][2])
-            idx += 1
+            push!(boundary_nodes, unpack(adj[idx])...)
+            idx += ONE
         end
 
         # Finally push the current node as well if it is part of a boundary edge
@@ -171,39 +88,22 @@ function collect_boundary_nodes!(ptr, adj, boundary_nodes::Vector{Ti}) where {Ti
     return remove_duplicates!(sort!(boundary_nodes))
 end
 
-function tetra_division(refinements::Int = 3, ::Type{Tv} = Float64, ::Type{Ti} = Int) where {Tv,Ti}
-    nodes = SVector{3,Tv}[(0.0,0.0,0.0), (1.0,0.0,0.0), (0.0,1.0,0.0), (1.0,1.0,0.0), (0.0,0.0,1.0), (1.0,0.0,1.0), (0.0,1.0,1.0), (1.0,1.0,1.0)]
-    tets = SVector{4,Ti}[(1,2,3,5), (2,3,4,8), (2,5,6,8), (2,3,5,8), (3,5,7,8)]
-    mesh = Mesh(Tet, nodes, tets)
-
-    for i = 1 : refinements
-        mesh = refine(mesh)
+function sort_faces!(ptr, adj)
+    @inbounds for i = 1 : length(ptr) - 1
+        sort!(adj, Int(ptr[i]), ptr[i + 1] - 1, QuickSort, Base.Order.Forward)
     end
 
-    return mesh
+    return ptr, adj
 end
 
-function put_it_together(refinements::Int)
-    mesh = tetra_division(refinements)
-    ptr, adj = do_things_with_faces(mesh)
-    sort_faces_and_stuff!(ptr, adj)
-    boundary = collect_boundary_nodes!(ptr, adj, Int[])
-    interior = to_interior(boundary, length(mesh.nodes))
+"""
+Find interior nodes of a tetrahedron mesh
+"""
+function find_interior_nodes(mesh::Mesh{Tet,Tv,UInt32}) where {Tv}
+    ptr, adj = list_all_faces(mesh)
+    sort_faces!(ptr, adj)
+    boundary_nodes = collect_boundary_nodes!(ptr, adj, UInt32[])
+    interior_nodes = to_interior(boundary_nodes, length(mesh.nodes))
 
-    return mesh, interior
-end
-
-function cube_stuff()
-    # (x, y, z)
-    nodes = ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (1.0, 1.0, 0.0),
-              (0.0, 0.0, 1.0), (1.0, 0.0, 1.0), (0.0, 1.0, 1.0), (1.0, 1.0, 1.0))
-    
-    # This stuff fills a cube
-    tetras = ((1,2,3,5), (2,3,4,8), (2,5,6,8), (2,3,5,8), (3,5,7,8))
-
-    node_matrix = [x[i] for i = 1:3, x in nodes]
-    tetra_list = [MeshCell(VTKCellTypes.VTK_TETRA, [t...]) for t in tetras]
-    vtkfile = vtk_grid("tetra_test", node_matrix, tetra_list)
-    # vtk_point_data(vtkfile, data, "f")
-    vtk_save(vtkfile)
+    return interior_nodes
 end
