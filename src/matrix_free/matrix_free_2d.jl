@@ -1,38 +1,83 @@
-using StaticArrays
+using BenchmarkTools
 
-"""
-Starting out with a list of nodes and triangles, we recursively refine things
-and at the bottom level we integrate.
+function matrix_free_2d(refinements)
+    ps = SVector{2,Float64}[(0, 0), (1, 0), (0, 1)]
+    ts = SVector{3,Int64}[(1, 2, 3)]
 
-Potentially easily parallellizable as well.
-"""
-function matrix_free_2d(lvl)
-    triangle = ((SVector(0.0, 0.0), SVector(1.0, 0.0), SVector(0.0, 1.0)), 
-                (SVector(1.0, 0.0), SVector(0.0, 1.0), SVector(1.0, 1.0)))
-    points = Vector{SVector{2,Float64}}()
+    mesh = Mesh(Tri, ps, ts)
+    graph, boundary, interior = construct_graph_and_find_interior_nodes(mesh)
 
-    for t in triangle
-        refine(t, lvl, points)
+    println(length(boundary) / length(mesh.nodes), "\t", length(mesh.nodes))
+
+    for i = 1 : refinements
+        mesh = refine(mesh, graph)
+        graph, boundary, interior = construct_graph_and_find_interior_nodes(mesh)
+        println(length(boundary) / length(mesh.nodes), "\t", length(mesh.nodes))
     end
-
-    return points
 end
 
-function refine(t::NTuple{3}, level::Int, points)
-    if level == 0
-        push!(points, t[1], t[2], t[3])
-        return points
+function my_assembly(m::Mesh{Te,Tv,Ti}, bilinear_form, quad::Type{<:QuadRule} = default_quadrature(Te)) where {Te,Tv,Ti}
+    # Quadrature scheme
+    ϕs, ∇ϕs = get_basis_funcs(Te)
+    ws, xs = quadrature_rule(quad)
+    basis = evaluate_basis_funcs(ϕs, ∇ϕs, xs)
+
+    Nt = length(m.elements)
+    Nn = length(m.nodes)
+    Nq = length(xs)
+    
+    # This is for now hard-coded...
+    const dof = length(m.elements[1])
+    
+    # The local system matrix
+    A_local = zeros(dof, dof)
+
+    idx = 1
+
+    # Loop over all elements & compute the local system matrix
+    for element in m.elements
+        jac, shift = affine_map(m, element)
+        J = inv(jac')
+        detJ = abs(det(J))
+
+        # Reset local matrix
+        fill!(A_local, zero(Tv))
+
+        # For each quad point
+        @inbounds for k = 1 : Nq
+            w = ws[k]
+            for j = 1:dof
+                v = basis[k][j]
+                for i = 1:dof
+                    u = basis[k][i]
+                    A_local[i,j] += w * (dot(J * u.grad, J * v.grad) + u.ϕ * v.ϕ)
+                end
+            end
+        end
+
+        @inbounds for j = 1:dof, i = 1:dof
+            A_local[i,j] *= detJ
+        end
     end
 
+    A_local
+end
 
-    n1, n2, n3 = t
-    c1 = (n1 + n2) / 2
-    c2 = (n1 + n3) / 2
-    c3 = (n2 + n3) / 2
+function profile_stuff(ref)
+    mesh, graph, interior = unit_square(ref)
+    bf = (u, v, x) -> dot(u.∇ϕ, v.∇ϕ) + u.ϕ * v.ϕ
+    @profile my_assembly(mesh, bf)
+end
 
-    refine((n1, c1, c2), level - 1, points)
-    refine((n2, c1, c3), level - 1, points)
-    refine((n3, c2, c3), level - 1, points)
+function bench_stuff(ref)
+    mesh, graph, interior = unit_square(ref)
+    bf = (u, v, x) -> dot(u.∇ϕ, v.∇ϕ) + u.ϕ * v.ϕ
+    @benchmark my_assembly($mesh, $bf)
+end
 
-    return points
+function run_stuff(ref)
+    @time mesh, graph, interior = unit_square(ref)
+    @time my_assembly(mesh, identity)
+
+    return mesh
 end
