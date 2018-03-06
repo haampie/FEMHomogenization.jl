@@ -16,7 +16,7 @@ function matrix_free_2d(refinements)
     end
 end
 
-function my_assembly(m::Mesh{Te,Tv,Ti}, bilinear_form, quad::Type{<:QuadRule} = default_quadrature(Te)) where {Te,Tv,Ti}
+function multiply_mass_matrix(m::Mesh{Te,Tv,Ti}, bilinear_form, y::AbstractVector, x::AbstractVector, quad::Type{<:QuadRule} = default_quadrature(Te)) where {Te,Tv,Ti}
     # Quadrature scheme
     ϕs, ∇ϕs = get_basis_funcs(Te)
     ws, xs = quadrature_rule(quad)
@@ -34,11 +34,13 @@ function my_assembly(m::Mesh{Te,Tv,Ti}, bilinear_form, quad::Type{<:QuadRule} = 
 
     idx = 1
 
+    fill!(y, 0.0)
+
     # Loop over all elements & compute the local system matrix
     for element in m.elements
         jac, shift = affine_map(m, element)
         J = inv(jac')
-        detJ = abs(det(J))
+        detJ = abs(det(jac))
 
         # Reset local matrix
         fill!(A_local, zero(Tv))
@@ -55,29 +57,30 @@ function my_assembly(m::Mesh{Te,Tv,Ti}, bilinear_form, quad::Type{<:QuadRule} = 
             end
         end
 
+        # This will cause cache misses all over the place
         @inbounds for j = 1:dof, i = 1:dof
-            A_local[i,j] *= detJ
+            y[element[i]] += A_local[i,j] * detJ * x[element[j]]
         end
     end
 
-    A_local
-end
-
-function profile_stuff(ref)
-    mesh, graph, interior = unit_square(ref)
-    bf = (u, v, x) -> dot(u.∇ϕ, v.∇ϕ) + u.ϕ * v.ϕ
-    @profile my_assembly(mesh, bf)
-end
-
-function bench_stuff(ref)
-    mesh, graph, interior = unit_square(ref)
-    bf = (u, v, x) -> dot(u.∇ϕ, v.∇ϕ) + u.ϕ * v.ϕ
-    @benchmark my_assembly($mesh, $bf)
+    y
 end
 
 function run_stuff(ref)
     @time mesh, graph, interior = unit_square(ref)
-    @time my_assembly(mesh, identity)
+    x = ones(length(mesh.nodes))
+    y = similar(x)
+    @time A = assemble_matrix(mesh, (u, v, x) -> dot(u.∇ϕ, v.∇ϕ) + u.ϕ * v.ϕ)
+    @time z = A * x
+    @time multiply_mass_matrix(mesh, identity, y, x)
+    @show norm(y - z)
 
-    return mesh
+    return z, y
+end
+
+function profile_stuff(ref)
+    @time mesh, graph, interior = unit_square(ref)
+    x = ones(length(mesh.nodes))
+    y = similar(x)
+    @profile multiply_mass_matrix(mesh, identity, y, x)
 end

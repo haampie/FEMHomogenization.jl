@@ -27,6 +27,7 @@ include("examples_2d.jl")
 include("examples_3d.jl")
 include("example_homogenization.jl")
 include("matrix_free/matrix_free_2d.jl")
+include("matrix_free/generate_stuff.jl")
 
 
 end
