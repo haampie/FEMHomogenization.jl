@@ -18,11 +18,9 @@ function refine(mesh::Mesh{Tri,Tv,Ti}, graph::Graph{Ti}) where {Tv,Ti}
     
     # Add the new ones
     idx = Nn + 1
-    @inbounds for i = 1 : length(graph.ptr) - 1
-        for j = graph.ptr[i] : graph.ptr[i + 1] - 1
-            nodes[idx] = (mesh.nodes[i] + mesh.nodes[graph.adj[j]]) / 2
-            idx += 1
-        end
+    @inbounds for i = 1 : length(graph.ptr) - 1, j = graph.ptr[i] : graph.ptr[i + 1] - 1
+        nodes[idx] = (mesh.nodes[i] + mesh.nodes[graph.adj[j]]) / 2
+        idx += 1
     end
 
     # Split each triangle in four smaller ones

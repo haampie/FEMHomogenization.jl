@@ -5,7 +5,7 @@ default_quadrature(::Type{Tet}) = Tet4
 
 function quadrature_rule(::Type{Tet4})
     weights = (1/24, 1/24, 1/24, 1/24)
-    a, b = 0.5854101966249685, 0.1381966011250105
+    a, b = (5+3*√5)/20, (5-√5)/20
     points = (Coord{3}(a,b,b), Coord{3}(b,a,b), 
               Coord{3}(b,b,a), Coord{3}(b,b,b))
 
