@@ -1,6 +1,9 @@
+using IterativeSolvers
+
 function block_jaboci(name::String, ref::Int)
     m, _, int = unit_square(ref)
-    bilinear_form = (u, v, x) -> 10 * u.ϕ * v.ϕ + (1.0 + 8.0rand()) * u.∇ϕ[1] * v.∇ϕ[1] + (1.0 + 8.0rand()) * u.∇ϕ[2] * v.∇ϕ[2]
+    bilinear_form = (u, v, x) -> 8 * u.ϕ * v.ϕ + (1.0 + sqrt(x[1])) * u.∇ϕ[1] * v.∇ϕ[1] + 
+                                                 (1.0 + sqrt(x[2])) * u.∇ϕ[2] * v.∇ϕ[2]
     
     A = assemble_matrix(m, bilinear_form)
     b = assemble_rhs(m, x -> 1.0)
@@ -9,7 +12,18 @@ function block_jaboci(name::String, ref::Int)
     A_int = A[int,int]
     x = zeros(b)
     b_int = b[int]
-    x[int] .= A_int \ b_int
+    x_int = A_int \ b_int
+    x[int] .= x_int
+
+    ###
+    # Do standard jacobi
+    myx = rand(length(int))
+    my_iterable = IterativeSolvers.jacobi_iterable(myx, A_int, b_int, maxiter = 50)
+    @time for item in my_iterable
+        @show norm(x_int - myx)
+    end
+
+    ###
 
     # Split the domain in 2 parts
     half = div(length(m.elements), 2)
@@ -22,18 +36,16 @@ function block_jaboci(name::String, ref::Int)
     fst = collect(fst)
     snd = collect(snd)
 
-    y = zeros(length(m.nodes))
-    y[fst] .= 1.0
-    y[snd] .= 2.0
-
     Ã = [A[fst,fst] A[fst,snd]; A[snd,fst] A[snd,snd]]
     D = blkdiag(A[fst,fst], A[snd,snd])
     R = Ã - D
     b̃ = [b[fst];b[snd]]
-
+    
+    x_ref = [x[fst];x[snd]]
     x̃ = rand(size(b̃))
 
-    for i = 1 : 10
+    @time for i = 1 : 50
+        @show norm(x_ref - x̃)
         x̃ = D \ (b̃ - R * x̃)
     end
 

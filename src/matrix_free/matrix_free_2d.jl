@@ -52,7 +52,7 @@ function multiply_mass_matrix(m::Mesh{Te,Tv,Ti}, bilinear_form, y::AbstractVecto
                 v = basis[k][j]
                 for i = 1:dof
                     u = basis[k][i]
-                    A_local[i,j] += w * (dot(J * u.grad, J * v.grad) + u.ϕ * v.ϕ)
+                    A_local[i,j] += w * dot(J * u.grad, J * v.grad)
                 end
             end
         end

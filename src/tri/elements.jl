@@ -1,5 +1,8 @@
 abstract type Tri <: MeshElement end
 
+dim(::Type{Tri}) = 2
+size(::Type{Tri}) = 3
+
 function get_basis_funcs(::Type{Tri})
     ϕs = (
         x -> 1.0 - x[1] - x[2],
