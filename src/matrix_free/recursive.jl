@@ -1,3 +1,5 @@
+using BenchmarkTools
+using AMD
 
 function merge_triangles(n = 8)
     # Assume right-angled triangles with side divided in n parts
@@ -68,3 +70,27 @@ function recursive_test(refs = 4)
     matrices, meshes
 end
 
+function bench_things(r)
+    As, Ms = recursive_test(r)
+
+    timings_1 = []
+    timings_2 = []
+    nonzeros = Int[]
+
+    for (i, A) = enumerate(As)
+        println(i)
+        @time p = amd(A)
+        B = A[p,p]
+        x = rand(size(A, 1))
+        y = similar(x)
+        push!(timings_1, @benchmark A_mul_B!($y, $A, $x))
+        push!(timings_2, @benchmark A_mul_B!($y, $B, $x))
+        push!(nonzeros, nnz(A))
+    end
+
+    for (i, (t1, t2, b)) in enumerate(zip(timings_1, timings_2, nonzeros))
+        println(i, "\t", median(t1).time / b, "\t", median(t2).time / b)
+    end 
+    
+    return timings_1, timings_2, nonzeros
+end

@@ -3,6 +3,8 @@ module FEMHomogenization
 using StaticArrays
 using WriteVTK
 
+import Base: size
+
 const Coord{d} = SVector{d,Float64}
 
 include("elements.jl")
