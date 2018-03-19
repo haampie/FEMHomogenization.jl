@@ -41,3 +41,14 @@ function refine(mesh::Mesh{Tri,Tv,Ti}, graph::Graph{Ti}) where {Tv,Ti}
 
     return Mesh(Tri, nodes, triangles)
 end
+
+"""
+If you aren't interested in the graph, this is helpful
+"""
+function refine(mesh::Mesh{Tri,Tv,Ti}, refinements::Int) where {Tv,Ti}
+    for i = 1 : refinements
+        mesh = refine(mesh, remove_duplicates!(to_graph(mesh)))
+    end
+
+    return mesh
+end
