@@ -39,7 +39,7 @@ function mul!(y::AbstractVector, coarse::Mesh{Tri,Tv,Ti}, fine::Mesh{Tri,Tv,Ti},
     
     total = length(coarse.elements)
 
-    Threads.@threads for i = 1 : total
+    for i = 1 : total
         @inbounds begin
             offset = (i - 1) * length(fine.nodes) + 1
             range = offset : offset + length(fine.nodes) - 1
@@ -115,7 +115,7 @@ function get_edge_number_and_orientation(element, edge)
     from_idx = findfirst(x -> x == edge.from, element)
     to_idx = findfirst(x -> x == edge.to, element)
 
-    # ccw if edge is 1->2, 2->3 or 3->1.
+    # ccw if edge is 1→2, 2→3 or 3→1.
     if from_idx + 1 == to_idx || from_idx == 3 && to_idx == 1
         return from_idx, true
     else
@@ -140,23 +140,16 @@ function combine_edges!(y, coarse::Mesh{Tri}, fine::Mesh{Tri}, edge_indices::Bou
         snd_edge = edge_indices.edges[local_edge_two]
 
         interior_nodes = length(fst_edge)
+        range_one = 1 : interior_nodes
+        range_two = direction_one == direction_two ? StepRange(range_one) : reverse(range_one)
 
-        if direction_one == direction_two
-            for i = 1 : interior_nodes
-                idx_one = offset_one + fst_edge[i]
-                idx_two = offset_two + snd_edge[i]
-                sum = y[idx_one] + y[idx_two]
-                y[idx_one] = sum
-                y[idx_two] = sum
-            end
-        else
-            for i = 1 : interior_nodes
-                idx_one = offset_one + fst_edge[i]
-                idx_two = offset_two + snd_edge[interior_nodes - i + 1]
-                sum = y[idx_one] + y[idx_two]
-                y[idx_one] = sum
-                y[idx_two] = sum
-            end
+        # Todo: tidy this to one loop.
+        for i = range_one
+            idx_one = offset_one + fst_edge[i]
+            idx_two = offset_two + snd_edge[range_two[i]]
+            sum = y[idx_one] + y[idx_two]
+            y[idx_one] = sum
+            y[idx_two] = sum
         end
     end
 
@@ -271,8 +264,8 @@ end
 
 function how_far_can_we_go(coarse_ref, fine_ref)
     # Build a coarse mesh
-    nodes = SVector{2,Float64}[(0, 0), (1, 3), (3, 3), (2, 1), (4, 1)]
-    elements = SVector{3,Int64}[(1, 2, 4), (2, 3, 4), (3, 4, 5)]
+    nodes = SVector{2,Float64}[(0, 0), (1, 3), (3, 3), (2, 1), (4, 1), (5, 3)]
+    elements = SVector{3,Int64}[(1, 2, 4), (2, 3, 4), (3, 4, 5), (4, 5, 6)]
     coarse = refine(Mesh(Tri, nodes, elements), coarse_ref)
 
     # Build a single fine reference mesh
@@ -291,12 +284,91 @@ function how_far_can_we_go(coarse_ref, fine_ref)
     x = ones(length(coarse.elements) * length(fine.nodes))
     y = rand!(similar(x))
 
-    # @show sizeof(x)
+    @show length(x)
 
     mul!(y, coarse, fine, operators, edge_indices, connectivity, x)
 
-    # @show norm(y)
+    @show norm(y)
 
     nothing
 end
 
+
+"""
+The combination 8 & 7 gives about 1.611.000.000 unknowns, which comes down to
+about 
+"""
+function local_multigrid(coarse_ref = 8, fine_ref = 7, ::Type{Tv} = Float32) where {Tv<:AbstractFloat}
+    # Build a coarse mesh
+    nodes = SVector{2,Float32}[(0, 0), (1, 3), (3, 3), (2, 1), (4, 1)]
+    elements = SVector{3,Int32}[(1, 2, 4), (2, 3, 4), (3, 4, 5)]
+    coarse = refine(Mesh(Tri, nodes, elements), coarse_ref)
+
+    total_bytes = 0
+
+    finer_grids = []
+
+    for i = 1 : fine_ref
+        # Build a single fine reference mesh
+        fine = refined_reference_triangle(i)
+
+        # Collect nodes on the edges, but not the vertices
+        edge_indices = fine_grid_edge_nodes(fine)
+
+        push!(finer_grids, (fine, length(edge_indices.edges[1])))
+
+        # Build the fine operators {A11, A12, A21, A22}
+        operators = fine_grid_operators(fine)
+
+        # We have to reserve 3 vectors of this size (r, b, x)
+        new_bytes = 3 * sizeof(Tv) * length(coarse.elements) * length(fine.nodes)
+        @show new_bytes / 1024^3
+        total_bytes += new_bytes
+    end
+
+    # Over-estimate of the number of unknowns:
+    max_unknowns = length(finer_grids[end][1].nodes) * length(coarse.elements)
+
+    # Under-estimate of the number of unknowns:
+    min_unknowns = max_unknowns - div(3 * length(coarse.elements) * finer_grids[end][2], 2)
+
+    return total_bytes / 1024^3, (min_unknowns, max_unknowns)
+
+    # Find how the edges an vertices of the coarse grid are connected
+    connectivity = inspect_coarse_grid(coarse)
+
+    # Initialize a random x to do multiplication with (and store it in y)
+    x = ones(length(coarse.elements) * length(fine.nodes))
+    y = rand!(similar(x))
+
+    @show length(x)
+
+    mul!(y, coarse, fine, operators, edge_indices, connectivity, x)
+
+    @show norm(y)
+
+    nothing
+end
+
+function my_vcycle(mg::MG{T}, interpolation, level::Int, smooth) where {T}
+    r = mg[level].r
+    x = mg[level].x
+    b = mg[level].b
+    ω = mg[level].ω
+
+    for i = 1 : smooth
+        # r = Ax - b
+        mul!(r, A, x)
+        r .-= b
+        x .-= ω .* r
+    end
+
+    
+
+    for i = 1 : smooth
+        # r = Ax - b
+        mul!(r, A, x)
+        r .-= b
+        x .-= ω .* r
+    end
+end
