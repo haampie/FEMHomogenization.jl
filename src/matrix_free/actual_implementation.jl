@@ -1,5 +1,34 @@
 using BenchmarkTools
 
+function generic_rmul!(X::AbstractArray, s::Number)
+    @simd for I in eachindex(X)
+        @inbounds X[I] *= s
+    end
+    X
+end
+
+rmul!(A::AbstractArray, b::Number) = generic_rmul!(A, b)
+
+function mul!(C::StridedVector, A::SparseMatrixCSC, B::StridedVector, α::Number, β::Number)
+    A.n == size(B, 1) || throw(DimensionMismatch())
+    A.m == size(C, 1) || throw(DimensionMismatch())
+    size(B, 2) == size(C, 2) || throw(DimensionMismatch())
+    nzv = A.nzval
+    rv = A.rowval
+    if β != 1
+        β != 0 ? rmul!(C, β) : fill!(C, zero(eltype(C)))
+    end
+    @inbounds for col = 1:A.n
+        αxj = α*B[col]
+        for j = A.colptr[col]:A.colptr[col+1]-1
+            C[rv[j]] += nzv[j] * αxj
+        end
+    end
+    C
+end
+
+mul!(C::StridedVector, A::SparseMatrixCSC, B::StridedVector) = mul!(C, A, B, 1.0, 0.0)
+
 struct LocalIntegralParts{Tv,Ti}
     A11::SparseMatrixCSC{Tv,Ti}
     A12::SparseMatrixCSC{Tv,Ti}
@@ -31,41 +60,68 @@ Store an edge uniquely
 """
 ↔(a, b) = a < b ? a → b : b → a
 
+struct FullLinearOperator
+    coarse
+    fine
+    ops
+    edge_indices
+    connectivity
+end
+
+struct Interpolation
+    P
+end
+
+struct Restriction
+    P
+end
+
+function mul!(y::AbstractVector, P::Interpolation, x::AbstractVector)
+    for i = 1 : size(x, 2)
+        @inbounds mul!(view(y, :, i), P.P, view(x, :, i))
+    end
+end
+
+function mul!(y::AbstractVector, P::Restriction, x::AbstractVector)
+    for i = 1 : size(x, 2)
+        @inbounds Ac_mul_B!(view(y, :, i), P.P, view(x, :, i))
+    end
+end
+
 """
 We do local refinement in each element
 """
-function mul!(y::AbstractVector, coarse::Mesh{Tri,Tv,Ti}, fine::Mesh{Tri,Tv,Ti}, 
-              ops::LocalIntegralParts, edge_indices, connectivity, x::AbstractVector) where {Tv,Ti}
+function mul!(y::AbstractVector, A::FullLinearOperator, x::AbstractVector)
+    # Make `x` and `y` of size fine nodes × coarse elements for simpler indexing
+    x_reshaped = reshape(x, length(A.fine.nodes), length(A.coarse.elements))
+    y_reshaped = reshape(y, length(A.fine.nodes), length(A.coarse.elements))
     
-    total = length(coarse.elements)
-
-    for i = 1 : total
+    Threads.@threads for i = 1 : length(A.coarse.elements)
         @inbounds begin
-            offset = (i - 1) * length(fine.nodes) + 1
-            range = offset : offset + length(fine.nodes) - 1
-            x_local = view(x, range)
-            y_local = view(y, range)
             
             # Compute the coarse affine transformation.
-            J, shift = affine_map(coarse, coarse.elements[i])
+            J, shift = affine_map(A.coarse, A.coarse.elements[i])
             invJ = inv(J)
             P = (invJ * invJ') * det(J)
-
+            
+            x_local = view(x_reshaped, :, i)
+            y_local = view(y_reshaped, :, i)
+            
             # We set y_local to 0 here implicitly
             # And then we add to it!
-            A_mul_B!(P[1,1], ops.A11, x_local, 0.0, y_local)
-            A_mul_B!(P[2,1], ops.A21, x_local, 1.0, y_local)
-            A_mul_B!(P[1,2], ops.A12, x_local, 1.0, y_local)
-            A_mul_B!(P[2,2], ops.A22, x_local, 1.0, y_local)
+            mul!(y_local, A.ops.A11, x_local, P[1,1], 0.0)
+            mul!(y_local, A.ops.A21, x_local, P[2,1], 1.0)
+            mul!(y_local, A.ops.A12, x_local, P[1,2], 1.0)
+            mul!(y_local, A.ops.A22, x_local, P[2,2], 1.0)
         end
     end
-
+    
     # Combine the values on the coarse grid edges
-    combine_edges!(y, coarse, fine, edge_indices, connectivity)
+    combine_edges!(y_reshaped, A)
     
     # Combine the values on the coarse grid vertices
-    combine_vertices!(y, coarse, fine, connectivity)
-
+    combine_vertices!(y_reshaped, A)
+    
     y
 end
 
@@ -78,7 +134,7 @@ function fine_grid_operators(mesh::Mesh{Tri})
     A12 = assemble_matrix(mesh, (u, v, x) -> u.∇ϕ[1] * v.∇ϕ[2])
     A21 = assemble_matrix(mesh, (u, v, x) -> u.∇ϕ[2] * v.∇ϕ[1])
     A22 = assemble_matrix(mesh, (u, v, x) -> u.∇ϕ[2] * v.∇ϕ[2])
-
+    
     LocalIntegralParts(A11, A12, A21, A22)
 end
 
@@ -91,10 +147,10 @@ function fine_grid_edge_nodes(mesh::Mesh{Tri})
     
     # North-east
     e2 = find(x -> x[1] + x[2] ≈ 1.0 && 0.0 < x[1] < 1.0, mesh.nodes)
-
+    
     # West
     e3 = find(x -> x[1] ≈ 0.0 && 0.0 < x[2] < 1.0, mesh.nodes)
-
+    
     BoundaryEdges([e1, e2, e3])
 end
 
@@ -111,10 +167,10 @@ the edge as a boolean; true = counter-clockwise, false = clockwise. Exact
 orientation does not really matter, we only must make sure two edges have the
 same directionality.
 """
-function get_edge_number_and_orientation(element, edge)
+function edge_number_and_orientation(element, edge)
     from_idx = findfirst(x -> x == edge.from, element)
     to_idx = findfirst(x -> x == edge.to, element)
-
+    
     # ccw if edge is 1→2, 2→3 or 3→1.
     if from_idx + 1 == to_idx || from_idx == 3 && to_idx == 1
         return from_idx, true
@@ -126,64 +182,63 @@ end
 """
 Combine the values along the edges
 """
-function combine_edges!(y, coarse::Mesh{Tri}, fine::Mesh{Tri}, edge_indices::BoundaryEdges, connectivity::Connectivity)
-    @inbounds for (edge, elements) ∈ connectivity.edge_to_elements
+function combine_edges!(y, A)
+    @inbounds for (edge, elements) ∈ A.connectivity.edge_to_elements
         # Skip boundary edges
         length(elements) != 2 && continue
-
+        
+        e1 = elements[1]
+        e2 = elements[2]
+        
         # Assume the edge is in the direction a → a+1
-        local_edge_one, direction_one = get_edge_number_and_orientation(coarse.elements[elements[1]], edge)
-        local_edge_two, direction_two = get_edge_number_and_orientation(coarse.elements[elements[2]], edge)
-        offset_one = (elements[1] - 1) * length(fine.nodes)
-        offset_two = (elements[2] - 1) * length(fine.nodes)
-        fst_edge = edge_indices.edges[local_edge_one]
-        snd_edge = edge_indices.edges[local_edge_two]
-
+        fst_local_edge, fst_dir = edge_number_and_orientation(A.coarse.elements[e1], edge)
+        snd_local_edge, snd_dir = edge_number_and_orientation(A.coarse.elements[e2], edge)
+        fst_edge = A.edge_indices.edges[fst_local_edge]
+        snd_edge = A.edge_indices.edges[snd_local_edge]
+        
         interior_nodes = length(fst_edge)
         range_one = 1 : interior_nodes
-        range_two = direction_one == direction_two ? StepRange(range_one) : reverse(range_one)
-
+        range_two = fst_dir == snd_dir ? StepRange(range_one) : reverse(range_one)
+        
         # Todo: tidy this to one loop.
         for i = range_one
-            idx_one = offset_one + fst_edge[i]
-            idx_two = offset_two + snd_edge[range_two[i]]
-            sum = y[idx_one] + y[idx_two]
-            y[idx_one] = sum
-            y[idx_two] = sum
+            idx_one = fst_edge[i]
+            idx_two = snd_edge[range_two[i]]
+            sum = y[idx_one, e1] + y[idx_two, e2]
+            y[idx_one, e1] = sum
+            y[idx_two, e2] = sum
         end
     end
-
+    
     y
 end
 
 """
 Combine the values along the vertices
 """
-function combine_vertices!(y, coarse::Mesh{Tri}, fine::Mesh{Tri}, connectivity::Connectivity)
-    @inbounds for (node, elements) ∈ connectivity.node_to_elements
+function combine_vertices!(y, A)
+    @inbounds for (node, elements) ∈ A.connectivity.node_to_elements
         # Skip isolated nodes
         length(elements) < 2 && continue
-
+        
         sum = 0.0
-
+        
         # Reduce
         for idx in elements
-            local_index = (idx - 1) * length(fine.nodes) + findfirst(x -> x == node, coarse.elements[idx])
-            sum += y[local_index]
+            sum += y[findfirst(x -> x == node, A.coarse.elements[idx]), idx]
         end
-
+        
         # Store
         for idx in elements
-            local_index = (idx - 1) * length(fine.nodes) + findfirst(x -> x == node, coarse.elements[idx])
-            y[local_index] = sum
+            y[findfirst(x -> x == node, A.coarse.elements[idx]), idx] = sum
         end
     end
-
+    
     y
 end
 
 """
-    push!(dict, k, v)
+push!(dict, k, v)
 
 Equivalent to `push!(dict[k], v)` when `dict[k]` exists or `dict[k] = [v]` when
 `dict[k]` does not exist.
@@ -200,25 +255,25 @@ For a given coarse grid we should figure out a couple things:
 Note that we do not pre-allocate here, so we might be slow.
 """
 function inspect_coarse_grid(mesh::Mesh{Tri,Tv,Ti}) where {Tv,Ti}
-
+    
     n2e = Dict{Ti,Vector{Ti}}()
     e2e = Dict{Edge{Ti},Vector{Ti}}()
-
+    
     # Find the connectivity of the vertices and edges
     # by looping over all elements
     for (i, e) in enumerate(mesh.elements)
-
+        
         # Push the nodes (1, 2, 3)
         push_or_create!(n2e, e[1], i)
         push_or_create!(n2e, e[2], i)
         push_or_create!(n2e, e[3], i)
-
+        
         # Push the edges (1 ↔ 2, 2 ↔ 3, 3 ↔ 1)
         push_or_create!(e2e, e[1] ↔ e[2], i)
         push_or_create!(e2e, e[2] ↔ e[3], i)
         push_or_create!(e2e, e[1] ↔ e[3], i)
     end 
-
+    
     Connectivity(n2e, e2e)
 end
 
@@ -227,38 +282,40 @@ function benchmark_local_refinement_vs_global_operator(refs)
     nodes = SVector{2,Float64}[(0, 0), (1, 3), (3, 3), (2, 1), (4, 1)]
     elements = SVector{3,Int64}[(1, 2, 4), (2, 3, 4), (3, 4, 5)]
     coarse = refine(Mesh(Tri, nodes, elements), 5)
-
+    
     # Build a single fine reference mesh
     fine = refined_reference_triangle(refs)
-
+    
     # Collect nodes on the edges, but not the vertices
     edge_indices = fine_grid_edge_nodes(fine)
-
+    
     # Build the full fine mesh as well for comparison
     full = refine(coarse, refs)
-
+    
     # Build the fine operators {A11, A12, A21, A22}
     operators = fine_grid_operators(fine)
-
+    
     # Find how the edges an vertices of the coarse grid are connected
     connectivity = inspect_coarse_grid(coarse)
-
-    A = assemble_matrix(full, (u, v, x) -> dot(u.∇ϕ, v.∇ϕ))
-
+    
+    A_full = assemble_matrix(full, (u, v, x) -> dot(u.∇ϕ, v.∇ϕ))
+    
     # Initialize a random x to do multiplication with (and store it in y)
     x1 = ones(length(coarse.elements) * length(fine.nodes))
     y1 = rand!(similar(x1))
-
-    x2 = ones(size(A, 1))
+    
+    x2 = ones(size(A_full, 1))
     y2 = rand!(similar(x2))
-
+    
     @show sizeof(x1) sizeof(x2)
-
-    fst = @benchmark mul!($y1, $coarse, $fine, $operators, $edge_indices, $connectivity, $x1)
-    snd = @benchmark A_mul_B!($y2, $A, $x2)
-
+    
+    A = FullLinearOperator(coarse, fine, operators, edge_indices, connectivity)
+    
+    fst = @benchmark mul!($y1, $A, $x1)
+    snd = @benchmark mul!($y2, $A_full, $x2)
+    
     @show norm(y1) norm(y2)
-
+    
     return fst, snd
 end
 
@@ -267,108 +324,128 @@ function how_far_can_we_go(coarse_ref, fine_ref)
     nodes = SVector{2,Float64}[(0, 0), (1, 3), (3, 3), (2, 1), (4, 1), (5, 3)]
     elements = SVector{3,Int64}[(1, 2, 4), (2, 3, 4), (3, 4, 5), (4, 5, 6)]
     coarse = refine(Mesh(Tri, nodes, elements), coarse_ref)
-
+    
     # Build a single fine reference mesh
     fine = refined_reference_triangle(fine_ref)
-
+    
     # Collect nodes on the edges, but not the vertices
     edge_indices = fine_grid_edge_nodes(fine)
-
+    
     # Build the fine operators {A11, A12, A21, A22}
     operators = fine_grid_operators(fine)
-
+    
     # Find how the edges an vertices of the coarse grid are connected
     connectivity = inspect_coarse_grid(coarse)
-
+    
     # Initialize a random x to do multiplication with (and store it in y)
     x = ones(length(coarse.elements) * length(fine.nodes))
     y = rand!(similar(x))
-
+    
     @show length(x)
-
-    mul!(y, coarse, fine, operators, edge_indices, connectivity, x)
-
+    
+    A = FullLinearOperator(coarse, fine, operators, edge_indices, connectivity)
+    
+    mul!(y, A, x)
+    
     @show norm(y)
-
+    
     nothing
 end
 
+build_levels(As) = [FineLevel(
+    A,
+    Vector{Float64}(length(A.coarse.elements) * length(A.fine.nodes)),
+    Vector{Float64}(length(A.coarse.elements) * length(A.fine.nodes)),
+    Vector{Float64}(length(A.coarse.elements) * length(A.fine.nodes)),
+    0.8
+) for A in As]
 
-"""
-The combination 8 & 7 gives about 1.611.000.000 unknowns, which comes down to
-about 
-"""
-function local_multigrid(coarse_ref = 8, fine_ref = 7, ::Type{Tv} = Float32) where {Tv<:AbstractFloat}
+function local_multigrid(coarse_ref = 6, fine_ref = 6)
     # Build a coarse mesh
-    nodes = SVector{2,Float32}[(0, 0), (1, 3), (3, 3), (2, 1), (4, 1)]
-    elements = SVector{3,Int32}[(1, 2, 4), (2, 3, 4), (3, 4, 5)]
+    nodes = SVector{2,Float64}[(0, 0), (1, 3), (3, 3), (2, 1), (4, 1)]
+    elements = SVector{3,Int64}[(1, 2, 4), (2, 3, 4), (3, 4, 5)]
     coarse = refine(Mesh(Tri, nodes, elements), coarse_ref)
+    connectivity = inspect_coarse_grid(coarse)
 
-    total_bytes = 0
+    # Build the factorized coarse grid operator
+    A_coarse = factorize(assemble_matrix(coarse, (u, v, x) -> dot(u.∇ϕ, v.∇ϕ)))
 
-    finer_grids = []
+    # Build a local fine mesh that's gonna be refined a couple times.
+    fine = refined_reference_triangle(0)
+    edge_indices = fine_grid_edge_nodes(fine)
+    operators = fine_grid_operators(fine)
+    
+    # Just build the first one 'by hand' so we can reuse the element type
+    A_fst_fine = FullLinearOperator(coarse, fine, operators, edge_indices, connectivity)
+    As = Vector{typeof(A_fst_fine)}(fine_ref)
+    Ps = Vector{SparseMatrixCSC{Float64,Int}}(fine_ref - 1)
+    As[1] = A_fst_fine
 
-    for i = 1 : fine_ref
-        # Build a single fine reference mesh
-        fine = refined_reference_triangle(i)
-
+    for i = 1 : fine_ref - 1
+        fine, P = refine_with_operator(fine)
+        
         # Collect nodes on the edges, but not the vertices
         edge_indices = fine_grid_edge_nodes(fine)
-
-        push!(finer_grids, (fine, length(edge_indices.edges[1])))
-
+        
         # Build the fine operators {A11, A12, A21, A22}
         operators = fine_grid_operators(fine)
-
-        # We have to reserve 3 vectors of this size (r, b, x)
-        new_bytes = 3 * sizeof(Tv) * length(coarse.elements) * length(fine.nodes)
-        @show new_bytes / 1024^3
-        total_bytes += new_bytes
+        
+        As[i + 1] = FullLinearOperator(coarse, fine, operators, edge_indices, connectivity)
+        Ps[i] = P
     end
+    
+    lvls = build_levels(As)
+end
 
-    # Over-estimate of the number of unknowns:
-    max_unknowns = length(finer_grids[end][1].nodes) * length(coarse.elements)
+struct CoarseLevel{Tf,Tv}
+    A::Tf # Factorized matrix
+    x::Tv # Seems like we don't need this :? 
+    b::Tv 
+end
 
-    # Under-estimate of the number of unknowns:
-    min_unknowns = max_unknowns - div(3 * length(coarse.elements) * finer_grids[end][2], 2)
+struct FineLevel{To,Tv}
+    A::To # Our linear operator
+    x::Tv # Approximate solution to Ax=b
+    b::Tv # rhs
+    r::Tv # residual r = Ax - b or b - Ax (not sure yet)
+    ω
+end
 
-    return total_bytes / 1024^3, (min_unknowns, max_unknowns)
+struct Multigrid{Tf,Tv,Ti,To,Tp}
+    # Finer grids
+    fine::Vector{FineLevel{To,Tv}}
+    Ps::Vector{Tp}
+    coarse::CoarseLevel{Tf,Tv}
+end
 
-    # Find how the edges an vertices of the coarse grid are connected
-    connectivity = inspect_coarse_grid(coarse)
-
-    # Initialize a random x to do multiplication with (and store it in y)
-    x = ones(length(coarse.elements) * length(fine.nodes))
-    y = rand!(similar(x))
-
-    @show length(x)
-
-    mul!(y, coarse, fine, operators, edge_indices, connectivity, x)
-
-    @show norm(y)
-
+function smooth!(lvl::FineLevel, steps::Int)
+    for i = 1 : steps
+        # r = Ax - b
+        # x = x + ω * r
+        mul!(lvl.r, lvl.A, lvl.x)
+        lvl.r .-= lvl.b
+        lvl.x .+= lvl.ω .* lvl.r
+    end
+    
     nothing
 end
 
-function my_vcycle(mg::MG{T}, interpolation, level::Int, smooth) where {T}
-    r = mg[level].r
-    x = mg[level].x
-    b = mg[level].b
-    ω = mg[level].ω
-
-    for i = 1 : smooth
-        # r = Ax - b
-        mul!(r, A, x)
-        r .-= b
-        x .-= ω .* r
-    end
-
+function my_vcycle(mg::Multigrid, idx::Int, steps::Int)
+    lvl = mg.fine[idx]
+    P = mg.Ps[idx].P
     
-
-    for i = 1 : smooth
-        # r = Ax - b
-        mul!(r, A, x)
-        r .-= b
-        x .-= ω .* r
+    # Smoothing steps with Richardson iteration
+    smooth!(lvl, steps)
+    
+    if idx < length(mg.fine)
+        # Fine grid
+        mul!()
+    else
+        # If we're on the coarsest grid to an explicit solve
+        mul!(P, lvl.r)
+        mg.coarse.x .= mg.coarse.A \ mg.coarse.b
     end
+    
+    # Smoothing steps with Richardson iteration
+    smooth!(lvl, steps)
 end

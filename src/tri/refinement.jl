@@ -52,3 +52,8 @@ function refine(mesh::Mesh{Tri,Tv,Ti}, refinements::Int) where {Tv,Ti}
 
     return mesh
 end
+
+function refine_with_operator(mesh::Mesh{Tri})
+    graph = remove_duplicates!(to_graph(mesh))
+    return refine(mesh, graph), interpolation_operator(mesh, graph)
+end
