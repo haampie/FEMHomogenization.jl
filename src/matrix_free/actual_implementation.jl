@@ -1,5 +1,9 @@
 using BenchmarkTools
 
+struct Adjoint{T}
+    parent::T
+end
+
 function generic_rmul!(X::AbstractArray, s::Number)
     @simd for I in eachindex(X)
         @inbounds X[I] *= s
@@ -27,7 +31,28 @@ function mul!(C::StridedVector, A::SparseMatrixCSC, B::StridedVector, α::Number
     C
 end
 
-mul!(C::StridedVector, A::SparseMatrixCSC, B::StridedVector) = mul!(C, A, B, 1.0, 0.0)
+function mul!(C::StridedVector, adjA::Adjoint{<:SparseMatrixCSC}, B::StridedVector, α::Number, β::Number)
+    @show size(C) size(B) size(adjA.parent)
+    A = adjA.parent
+    A.n == size(C, 1) || throw(DimensionMismatch())
+    A.m == size(B, 1) || throw(DimensionMismatch())
+    size(B, 2) == size(C, 2) || throw(DimensionMismatch())
+    nzv = A.nzval
+    rv = A.rowval
+    if β != 1
+        β != 0 ? rmul!(C, β) : fill!(C, zero(eltype(C)))
+    end
+    @inbounds for col = 1:A.n
+        tmp = zero(eltype(C))
+        for j = A.colptr[col]:A.colptr[col+1]-1
+            tmp += adjoint(nzv[j])*B[rv[j]]
+        end
+        C[col] += α*tmp
+    end
+    C
+end
+
+mul!(C, A, B) = mul!(C, A, B, 1.0, 0.0)
 
 struct LocalIntegralParts{Tv,Ti}
     A11::SparseMatrixCSC{Tv,Ti}
@@ -68,23 +93,24 @@ struct FullLinearOperator
     connectivity
 end
 
-struct Interpolation
-    P
-end
-
-struct Restriction
-    P
+struct Interpolation{T}
+    P::T
 end
 
 function mul!(y::AbstractVector, P::Interpolation, x::AbstractVector)
+    y_reshaped = reshape(y, size(P, 2), :)
+    x_reshaped = reshape(x, size(P, 1), :)
     for i = 1 : size(x, 2)
-        @inbounds mul!(view(y, :, i), P.P, view(x, :, i))
+        @inbounds mul!(view(y_reshaped, :, i), P.P, view(x_reshaped, :, i))
     end
 end
 
-function mul!(y::AbstractVector, P::Restriction, x::AbstractVector)
+function mul!(y::AbstractVector, P::Adjoint{<:Interpolation}, x::AbstractVector)
+    P′ = Adjoint(P.parent.P)
+    y_reshaped = reshape(y, size(P.parent.P, 1), :)
+    x_reshaped = reshape(x, size(P.parent.P, 2), :)
     for i = 1 : size(x, 2)
-        @inbounds Ac_mul_B!(view(y, :, i), P.P, view(x, :, i))
+        @inbounds mul!(view(y_reshaped, :, i), P′, view(x_reshaped, :, i))
     end
 end
 
@@ -352,13 +378,15 @@ function how_far_can_we_go(coarse_ref, fine_ref)
     nothing
 end
 
-build_levels(As) = [FineLevel(
-    A,
-    Vector{Float64}(length(A.coarse.elements) * length(A.fine.nodes)),
-    Vector{Float64}(length(A.coarse.elements) * length(A.fine.nodes)),
-    Vector{Float64}(length(A.coarse.elements) * length(A.fine.nodes)),
-    0.8
-) for A in As]
+build_levels(As) = map(As) do A
+    return FineLevel(
+        A,
+        Vector{Float64}(length(A.coarse.elements) * length(A.fine.nodes)),
+        Vector{Float64}(length(A.coarse.elements) * length(A.fine.nodes)),
+        Vector{Float64}(length(A.coarse.elements) * length(A.fine.nodes)),
+        0.8
+    )
+end
 
 function local_multigrid(coarse_ref = 6, fine_ref = 6)
     # Build a coarse mesh
@@ -394,30 +422,31 @@ function local_multigrid(coarse_ref = 6, fine_ref = 6)
         Ps[i] = P
     end
     
+    # Allocate the state vecs for each level
     lvls = build_levels(As)
-end
 
-struct CoarseLevel{Tf,Tv}
-    A::Tf # Factorized matrix
-    x::Tv # Seems like we don't need this :? 
-    b::Tv 
+    # Finally build the multigrid struct
+    mg = Multigrid(lvls, Ps)
+
+    my_vcycle!(mg, fine_ref, 2)
 end
 
 struct FineLevel{To,Tv}
     A::To # Our linear operator
     x::Tv # Approximate solution to Ax=b
     b::Tv # rhs
-    r::Tv # residual r = Ax - b or b - Ax (not sure yet)
+    r::Tv # residual r = Ax - b or b - Ax
     ω
 end
 
-struct Multigrid{Tf,Tv,Ti,To,Tp}
-    # Finer grids
+struct Multigrid{Tv,To,Tp}
     fine::Vector{FineLevel{To,Tv}}
     Ps::Vector{Tp}
-    coarse::CoarseLevel{Tf,Tv}
 end
 
+"""
+Do `steps` steps of Richardson iteration on the given level
+"""
 function smooth!(lvl::FineLevel, steps::Int)
     for i = 1 : steps
         # r = Ax - b
@@ -430,22 +459,35 @@ function smooth!(lvl::FineLevel, steps::Int)
     nothing
 end
 
-function my_vcycle(mg::Multigrid, idx::Int, steps::Int)
-    lvl = mg.fine[idx]
-    P = mg.Ps[idx].P
-    
-    # Smoothing steps with Richardson iteration
-    smooth!(lvl, steps)
-    
-    if idx < length(mg.fine)
-        # Fine grid
-        mul!()
+"""
+Run a single v-cycle of multigrid.
+"""
+function my_vcycle!(mg::Multigrid, idx::Int, steps::Int)
+    if idx == 1
+        throw("not yet implemented")
     else
-        # If we're on the coarsest grid to an explicit solve
-        mul!(P, lvl.r)
-        mg.coarse.x .= mg.coarse.A \ mg.coarse.b
+        # Current level
+        curr = mg.fine[idx]
+
+        # Coarser level
+        next = mg.fine[idx - 1]
+
+        # Interpolation operator from next -> curr
+        P = Interpolation(mg.Ps[idx - 1])
+        
+        # Smoothing steps with Richardson iteration
+        smooth!(curr, steps)
+        
+        # Restrict
+        mul!(next.b, Adjoint(P), curr.r)
+
+        # Solve on the next level
+        my_vcycle!(mg, idx - 1, steps)
+
+        # Interpolate (x += P * (P'AP) \ (P' b))
+        mul!(curr.x, P, next.x, 1.0, 1.0)
+        
+        # Smoothing steps with Richardson iteration
+        smooth!(curr, steps)
     end
-    
-    # Smoothing steps with Richardson iteration
-    smooth!(lvl, steps)
 end
