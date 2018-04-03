@@ -32,7 +32,6 @@ function mul!(C::StridedVector, A::SparseMatrixCSC, B::StridedVector, α::Number
 end
 
 function mul!(C::StridedVector, adjA::Adjoint{<:SparseMatrixCSC}, B::StridedVector, α::Number, β::Number)
-    @show size(C) size(B) size(adjA.parent)
     A = adjA.parent
     A.n == size(C, 1) || throw(DimensionMismatch())
     A.m == size(B, 1) || throw(DimensionMismatch())
@@ -45,7 +44,7 @@ function mul!(C::StridedVector, adjA::Adjoint{<:SparseMatrixCSC}, B::StridedVect
     @inbounds for col = 1:A.n
         tmp = zero(eltype(C))
         for j = A.colptr[col]:A.colptr[col+1]-1
-            tmp += adjoint(nzv[j])*B[rv[j]]
+            tmp += nzv[j] * B[rv[j]]
         end
         C[col] += α*tmp
     end
@@ -107,8 +106,8 @@ end
 
 function mul!(y::AbstractVector, P::Adjoint{<:Interpolation}, x::AbstractVector)
     P′ = Adjoint(P.parent.P)
-    y_reshaped = reshape(y, size(P.parent.P, 1), :)
-    x_reshaped = reshape(x, size(P.parent.P, 2), :)
+    y_reshaped = reshape(y, size(P.parent.P, 2), :)
+    x_reshaped = reshape(x, size(P.parent.P, 1), :)
     for i = 1 : size(x, 2)
         @inbounds mul!(view(y_reshaped, :, i), P′, view(x_reshaped, :, i))
     end
@@ -381,10 +380,10 @@ end
 build_levels(As) = map(As) do A
     return FineLevel(
         A,
-        Vector{Float64}(length(A.coarse.elements) * length(A.fine.nodes)),
-        Vector{Float64}(length(A.coarse.elements) * length(A.fine.nodes)),
-        Vector{Float64}(length(A.coarse.elements) * length(A.fine.nodes)),
-        0.8
+        zeros(length(A.coarse.elements) * length(A.fine.nodes)),
+        zeros(length(A.coarse.elements) * length(A.fine.nodes)),
+        zeros(length(A.coarse.elements) * length(A.fine.nodes)),
+        1.3
     )
 end
 
@@ -425,10 +424,23 @@ function local_multigrid(coarse_ref = 6, fine_ref = 6)
     # Allocate the state vecs for each level
     lvls = build_levels(As)
 
+    fill!(lvls[end].x, 0.0)
+    rand!(lvls[end].b)
+
+    @show length(lvls[end].x)
+
     # Finally build the multigrid struct
     mg = Multigrid(lvls, Ps)
 
-    my_vcycle!(mg, fine_ref, 2)
+    return mg, coarse
+
+    try my_vcycle!(mg, fine_ref, 2)
+        
+    catch e
+
+    end
+
+    return mg.fine, coarse
 end
 
 struct FineLevel{To,Tv}
