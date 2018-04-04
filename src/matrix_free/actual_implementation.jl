@@ -1,57 +1,10 @@
 using BenchmarkTools
 
+import Base: A_mul_B!, At_mul_B!
+
 struct Adjoint{T}
     parent::T
 end
-
-function generic_rmul!(X::AbstractArray, s::Number)
-    @simd for I in eachindex(X)
-        @inbounds X[I] *= s
-    end
-    X
-end
-
-rmul!(A::AbstractArray, b::Number) = generic_rmul!(A, b)
-
-function mul!(C::StridedVector, A::SparseMatrixCSC, B::StridedVector, α::Number, β::Number)
-    A.n == size(B, 1) || throw(DimensionMismatch())
-    A.m == size(C, 1) || throw(DimensionMismatch())
-    size(B, 2) == size(C, 2) || throw(DimensionMismatch())
-    nzv = A.nzval
-    rv = A.rowval
-    if β != 1
-        β != 0 ? rmul!(C, β) : fill!(C, zero(eltype(C)))
-    end
-    @inbounds for col = 1:A.n
-        αxj = α*B[col]
-        for j = A.colptr[col]:A.colptr[col+1]-1
-            C[rv[j]] += nzv[j] * αxj
-        end
-    end
-    C
-end
-
-function mul!(C::StridedVector, adjA::Adjoint{<:SparseMatrixCSC}, B::StridedVector, α::Number, β::Number)
-    A = adjA.parent
-    A.n == size(C, 1) || throw(DimensionMismatch())
-    A.m == size(B, 1) || throw(DimensionMismatch())
-    size(B, 2) == size(C, 2) || throw(DimensionMismatch())
-    nzv = A.nzval
-    rv = A.rowval
-    if β != 1
-        β != 0 ? rmul!(C, β) : fill!(C, zero(eltype(C)))
-    end
-    @inbounds for col = 1:A.n
-        tmp = zero(eltype(C))
-        for j = A.colptr[col]:A.colptr[col+1]-1
-            tmp += nzv[j] * B[rv[j]]
-        end
-        C[col] += α*tmp
-    end
-    C
-end
-
-mul!(C, A, B) = mul!(C, A, B, 1.0, 0.0)
 
 struct LocalIntegralParts{Tv,Ti}
     A11::SparseMatrixCSC{Tv,Ti}
@@ -96,58 +49,73 @@ struct Interpolation{T}
     P::T
 end
 
-function mul!(y::AbstractVector, P::Interpolation, x::AbstractVector)
-    y_reshaped = reshape(y, size(P, 2), :)
-    x_reshaped = reshape(x, size(P, 1), :)
-    for i = 1 : size(x, 2)
-        @inbounds mul!(view(y_reshaped, :, i), P.P, view(x_reshaped, :, i))
-    end
-end
-
-function mul!(y::AbstractVector, P::Adjoint{<:Interpolation}, x::AbstractVector)
-    P′ = Adjoint(P.parent.P)
-    y_reshaped = reshape(y, size(P.parent.P, 2), :)
-    x_reshaped = reshape(x, size(P.parent.P, 1), :)
-    for i = 1 : size(x, 2)
-        @inbounds mul!(view(y_reshaped, :, i), P′, view(x_reshaped, :, i))
-    end
-end
+A_mul_B!(y, P::Interpolation, x) = A_mul_B!(y, P.P, x)
+At_mul_B!(y, P::Interpolation, x) = At_mul_B!(y, P.P, x)
+A_mul_B!(α, P::Interpolation, x, β, y) = A_mul_B!(α, P.P, x, β, y)
+At_mul_B!(α, P::Interpolation, x, β, y) = At_mul_B!(α, P.P, x, β, y)
 
 """
 We do local refinement in each element
 """
-function mul!(y::AbstractVector, A::FullLinearOperator, x::AbstractVector)
-    # Make `x` and `y` of size fine nodes × coarse elements for simpler indexing
-    x_reshaped = reshape(x, length(A.fine.nodes), length(A.coarse.elements))
-    y_reshaped = reshape(y, length(A.fine.nodes), length(A.coarse.elements))
-    
-    Threads.@threads for i = 1 : length(A.coarse.elements)
+function A_mul_B!(y, A::FullLinearOperator, x)
+    Threads.@threads for i = 1 : size(y, 2)
+    # for i = 1 : size(y, 2)
         @inbounds begin
-            
             # Compute the coarse affine transformation.
             J, shift = affine_map(A.coarse, A.coarse.elements[i])
             invJ = inv(J)
             P = (invJ * invJ') * det(J)
             
-            x_local = view(x_reshaped, :, i)
-            y_local = view(y_reshaped, :, i)
+            x_local = view(x, :, i)
+            y_local = view(y, :, i)
             
             # We set y_local to 0 here implicitly
             # And then we add to it!
-            mul!(y_local, A.ops.A11, x_local, P[1,1], 0.0)
-            mul!(y_local, A.ops.A21, x_local, P[2,1], 1.0)
-            mul!(y_local, A.ops.A12, x_local, P[1,2], 1.0)
-            mul!(y_local, A.ops.A22, x_local, P[2,2], 1.0)
+            A_mul_B!(P[1,1], A.ops.A11, x_local, 0.0, y_local)
+            A_mul_B!(P[2,1], A.ops.A21, x_local, 1.0, y_local)
+            A_mul_B!(P[1,2], A.ops.A12, x_local, 1.0, y_local)
+            A_mul_B!(P[2,2], A.ops.A22, x_local, 1.0, y_local)
         end
     end
     
     # Combine the values on the coarse grid edges
-    combine_edges!(y_reshaped, A)
+    combine_edges!(y, A.connectivity.edge_to_elements, A.coarse.elements, A.edge_indices)
     
     # Combine the values on the coarse grid vertices
-    combine_vertices!(y_reshaped, A)
+    combine_vertices!(y, A.connectivity.node_to_elements, A.coarse.elements)
     
     y
+end
+
+"""
+Assemble the load vector locally in each coarse element
+and then sum along the boundary of the coarse elements.
+"""
+function assemble_const_load_vector!(b, coarse_mesh, fine_mesh, connectivity, edge_indices)
+    Threads.@threads for i = 1 : size(b, 2)
+    # for i = 1 : size(b, 2)
+        b_local = view(b, :, i)
+        fill!(b_local, 0.0)
+        
+        # Compute the coarse affine transformation.
+        J, shift = affine_map(coarse_mesh, coarse_mesh.elements[i])
+        detJac = abs(det(J))
+
+        # Loop over the fine elements
+        for fine_element in fine_mesh.elements
+            J_local, shift = affine_map(fine_mesh, fine_element)
+            total_det = abs(det(J_local)) * detJac
+            @inbounds for node in fine_element
+                b_local[node] += total_det
+            end
+        end
+    end
+
+    # Combine the values on the coarse grid edges
+    combine_edges!(b, connectivity.edge_to_elements, coarse_mesh.elements, edge_indices)
+    
+    # Combine the values on the coarse grid vertices
+    combine_vertices!(b, connectivity.node_to_elements, coarse_mesh.elements)
 end
 
 """
@@ -207,8 +175,8 @@ end
 """
 Combine the values along the edges
 """
-function combine_edges!(y, A)
-    @inbounds for (edge, elements) ∈ A.connectivity.edge_to_elements
+function combine_edges!(y, edge_to_elements, coarse_elements, edge_indices)
+    @inbounds for (edge, elements) in edge_to_elements
         # Skip boundary edges
         length(elements) != 2 && continue
         
@@ -216,10 +184,10 @@ function combine_edges!(y, A)
         e2 = elements[2]
         
         # Assume the edge is in the direction a → a+1
-        fst_local_edge, fst_dir = edge_number_and_orientation(A.coarse.elements[e1], edge)
-        snd_local_edge, snd_dir = edge_number_and_orientation(A.coarse.elements[e2], edge)
-        fst_edge = A.edge_indices.edges[fst_local_edge]
-        snd_edge = A.edge_indices.edges[snd_local_edge]
+        fst_local_edge, fst_dir = edge_number_and_orientation(coarse_elements[e1], edge)
+        snd_local_edge, snd_dir = edge_number_and_orientation(coarse_elements[e2], edge)
+        fst_edge = edge_indices.edges[fst_local_edge]
+        snd_edge = edge_indices.edges[snd_local_edge]
         
         interior_nodes = length(fst_edge)
         range_one = 1 : interior_nodes
@@ -241,8 +209,8 @@ end
 """
 Combine the values along the vertices
 """
-function combine_vertices!(y, A)
-    @inbounds for (node, elements) ∈ A.connectivity.node_to_elements
+function combine_vertices!(y, node_to_elements, coarse_elements)
+    @inbounds for (node, elements) in node_to_elements
         # Skip isolated nodes
         length(elements) < 2 && continue
         
@@ -250,12 +218,14 @@ function combine_vertices!(y, A)
         
         # Reduce
         for idx in elements
-            sum += y[findfirst(x -> x == node, A.coarse.elements[idx]), idx]
+            local_idx = findfirst(x -> x == node, coarse_elements[idx])
+            sum += y[local_idx, idx]
         end
         
         # Store
         for idx in elements
-            y[findfirst(x -> x == node, A.coarse.elements[idx]), idx] = sum
+            local_idx = findfirst(x -> x == node, coarse_elements[idx])
+            y[local_idx, idx] = sum
         end
     end
     
@@ -325,7 +295,7 @@ function benchmark_local_refinement_vs_global_operator(refs)
     
     A_full = assemble_matrix(full, (u, v, x) -> dot(u.∇ϕ, v.∇ϕ))
     
-    # Initialize a random x to do multiplication with (and store it in y)
+    # Initialize an x to do multiplication with (and store it in y)
     x1 = ones(length(coarse.elements) * length(fine.nodes))
     y1 = rand!(similar(x1))
     
@@ -336,8 +306,8 @@ function benchmark_local_refinement_vs_global_operator(refs)
     
     A = FullLinearOperator(coarse, fine, operators, edge_indices, connectivity)
     
-    fst = @benchmark mul!($y1, $A, $x1)
-    snd = @benchmark mul!($y2, $A_full, $x2)
+    fst = @benchmark A_mul_B!($y1, $A, $x1)
+    snd = @benchmark A_mul_B!($y2, $A_full, $x2)
     
     @show norm(y1) norm(y2)
     
@@ -370,7 +340,7 @@ function how_far_can_we_go(coarse_ref, fine_ref)
     
     A = FullLinearOperator(coarse, fine, operators, edge_indices, connectivity)
     
-    mul!(y, A, x)
+    A_mul_B!(y, A, x)
     
     @show norm(y)
     
@@ -380,10 +350,10 @@ end
 build_levels(As) = map(As) do A
     return FineLevel(
         A,
-        zeros(length(A.coarse.elements) * length(A.fine.nodes)),
-        zeros(length(A.coarse.elements) * length(A.fine.nodes)),
-        zeros(length(A.coarse.elements) * length(A.fine.nodes)),
-        1.3
+        zeros(length(A.fine.nodes), length(A.coarse.elements)),
+        zeros(length(A.fine.nodes), length(A.coarse.elements)),
+        zeros(length(A.fine.nodes), length(A.coarse.elements)),
+        0.8
     )
 end
 
@@ -425,35 +395,36 @@ function local_multigrid(coarse_ref = 6, fine_ref = 6)
     lvls = build_levels(As)
 
     fill!(lvls[end].x, 0.0)
-    rand!(lvls[end].b)
+    assemble_const_load_vector!(lvls[end].b, coarse, fine, connectivity, lvls[end].A.edge_indices)
 
     @show length(lvls[end].x)
 
     # Finally build the multigrid struct
-    mg = Multigrid(lvls, Ps)
+    mg = Multigrid(lvls, Ps, A_coarse)
+    
+    @time my_vcycle!(mg, fine_ref, 2) 
 
     return mg, coarse
-
-    try my_vcycle!(mg, fine_ref, 2)
-        
-    catch e
-
-    end
-
-    return mg.fine, coarse
 end
 
 struct FineLevel{To,Tv}
     A::To # Our linear operator
     x::Tv # Approximate solution to Ax=b
     b::Tv # rhs
-    r::Tv # residual r = Ax - b or b - Ax
+    r::Tv # residual r = Ax - b
     ω
 end
 
 struct Multigrid{Tv,To,Tp}
     fine::Vector{FineLevel{To,Tv}}
     Ps::Vector{Tp}
+    A_coarse
+end
+
+function residual!(lvl::FineLevel)
+    # r = Ax - b
+    A_mul_B!(lvl.r, lvl.A, lvl.x)
+    lvl.r .-= lvl.b
 end
 
 """
@@ -462,10 +433,10 @@ Do `steps` steps of Richardson iteration on the given level
 function smooth!(lvl::FineLevel, steps::Int)
     for i = 1 : steps
         # r = Ax - b
-        # x = x + ω * r
-        mul!(lvl.r, lvl.A, lvl.x)
-        lvl.r .-= lvl.b
-        lvl.x .+= lvl.ω .* lvl.r
+        residual!(lvl)
+
+        # x = x - ω * r
+        lvl.x .-= lvl.ω .* lvl.r
     end
     
     nothing
@@ -476,7 +447,8 @@ Run a single v-cycle of multigrid.
 """
 function my_vcycle!(mg::Multigrid, idx::Int, steps::Int)
     if idx == 1
-        throw("not yet implemented")
+        println("TODO coarse grid stuff!")
+        solve_low_dimensional_system!(mg)
     else
         # Current level
         curr = mg.fine[idx]
@@ -484,22 +456,53 @@ function my_vcycle!(mg::Multigrid, idx::Int, steps::Int)
         # Coarser level
         next = mg.fine[idx - 1]
 
+        println("Level ", idx)
+
         # Interpolation operator from next -> curr
         P = Interpolation(mg.Ps[idx - 1])
         
         # Smoothing steps with Richardson iteration
         smooth!(curr, steps)
+
+        # Compute the residual r = Ax - b
+        residual!(curr)
         
         # Restrict
-        mul!(next.b, Adjoint(P), curr.r)
+        At_mul_B!(next.b, P, curr.r)
 
         # Solve on the next level
         my_vcycle!(mg, idx - 1, steps)
 
-        # Interpolate (x += P * (P'AP) \ (P' b))
-        mul!(curr.x, P, next.x, 1.0, 1.0)
+        println("Level ", idx)
+
+        # Interpolate (x -= P * (P'AP) \ (P' b))
+        A_mul_B!(-1.0, P, next.x, 1.0, curr.x)
         
         # Smoothing steps with Richardson iteration
         smooth!(curr, steps)
     end
+end
+
+function solve_low_dimensional_system!(mg::Multigrid)
+    # Copy things and compute A \ b.
+
+    # First a sanity check.
+
+    lvl = mg.fine[1]
+
+    xs = fill(NaN, length(lvl.A.coarse.nodes))
+
+    for (j, elements) in enumerate(lvl.A.coarse.elements)
+        for (i, node) in enumerate(elements)
+
+            if xs[node] === NaN
+                xs[node] = lvl.b[i, j]
+            else
+                if xs[node] != lvl.b[i, j]
+                    println(xs[node], ' ', lvl.b[i,j])
+                end
+            end
+        end
+    end
+
 end
