@@ -62,9 +62,9 @@ function A_mul_B!(y, A::FullLinearOperator, x)
     # for i = 1 : size(y, 2)
         @inbounds begin
             # Compute the coarse affine transformation.
-            J, shift = affine_map(A.coarse, A.coarse.elements[i])
+            J, _ = affine_map(A.coarse, A.coarse.elements[i])
             invJ = inv(J)
-            P = (invJ * invJ') * det(J)
+            P = (invJ * invJ') * abs(det(J))
             
             x_local = view(x, :, i)
             y_local = view(y, :, i)
@@ -98,13 +98,13 @@ function assemble_const_load_vector!(b, coarse_mesh, fine_mesh, connectivity, ed
         fill!(b_local, 0.0)
         
         # Compute the coarse affine transformation.
-        J, shift = affine_map(coarse_mesh, coarse_mesh.elements[i])
+        J, _ = affine_map(coarse_mesh, coarse_mesh.elements[i])
         detJac = abs(det(J))
 
         # Loop over the fine elements
         for fine_element in fine_mesh.elements
-            J_local, shift = affine_map(fine_mesh, fine_element)
-            total_det = abs(det(J_local)) * detJac
+            J_local, _ = affine_map(fine_mesh, fine_element)
+            total_det = 1/6 * abs(det(J_local)) * detJac
             @inbounds for node in fine_element
                 b_local[node] += total_det
             end
@@ -137,12 +137,15 @@ Find the nodes on the interior of the boundary of a reference triangle
 function fine_grid_edge_nodes(mesh::Mesh{Tri})
     # South
     e1 = find(x -> x[2] ≈ 0.0 && 0.0 < x[1] < 1.0, mesh.nodes)
+    sort!(e1, by = node -> mesh.nodes[node][1])
     
     # North-east
     e2 = find(x -> x[1] + x[2] ≈ 1.0 && 0.0 < x[1] < 1.0, mesh.nodes)
+    sort!(e2, by = node -> mesh.nodes[node][1], rev = true)
     
     # West
     e3 = find(x -> x[1] ≈ 0.0 && 0.0 < x[2] < 1.0, mesh.nodes)
+    sort!(e3, by = node -> mesh.nodes[node][2], rev = true)
     
     BoundaryEdges([e1, e2, e3])
 end
@@ -176,6 +179,7 @@ end
 Combine the values along the edges
 """
 function combine_edges!(y, edge_to_elements, coarse_elements, edge_indices)
+    println("Combining")
     @inbounds for (edge, elements) in edge_to_elements
         # Skip boundary edges
         length(elements) != 2 && continue
@@ -188,12 +192,12 @@ function combine_edges!(y, edge_to_elements, coarse_elements, edge_indices)
         snd_local_edge, snd_dir = edge_number_and_orientation(coarse_elements[e2], edge)
         fst_edge = edge_indices.edges[fst_local_edge]
         snd_edge = edge_indices.edges[snd_local_edge]
+
+        @show (e1, e2) edge (fst_local_edge, snd_local_edge) (fst_dir, snd_dir)
         
-        interior_nodes = length(fst_edge)
-        range_one = 1 : interior_nodes
+        range_one = 1 : length(fst_edge)
         range_two = fst_dir == snd_dir ? StepRange(range_one) : reverse(range_one)
-        
-        # Todo: tidy this to one loop.
+
         for i = range_one
             idx_one = fst_edge[i]
             idx_two = snd_edge[range_two[i]]
@@ -202,6 +206,7 @@ function combine_edges!(y, edge_to_elements, coarse_elements, edge_indices)
             y[idx_two, e2] = sum
         end
     end
+    println("done")
     
     y
 end
@@ -357,11 +362,29 @@ build_levels(As) = map(As) do A
     )
 end
 
-function local_multigrid(coarse_ref = 6, fine_ref = 6)
-    # Build a coarse mesh
+function example_one(fine_ref = 6)
+    nodes = SVector{2,Float64}[(0, 0), (1, 3), (2, 1), (3, 3), (4, 1)]
+    elements = SVector{3,Int64}[(1, 2, 3), (2, 3, 4), (3, 4, 5)]
+    coarse = Mesh(Tri, nodes, elements)
+    local_multigrid(coarse, fine_ref)
+end
+
+function example_two(fine_ref = 6)
     nodes = SVector{2,Float64}[(0, 0), (1, 3), (3, 3), (2, 1), (4, 1)]
     elements = SVector{3,Int64}[(1, 2, 4), (2, 3, 4), (3, 4, 5)]
-    coarse = refine(Mesh(Tri, nodes, elements), coarse_ref)
+    coarse = Mesh(Tri, nodes, elements)
+    local_multigrid(coarse, fine_ref)
+end
+
+function example_three(fine_ref = 6)
+    nodes = SVector{2,Float64}[(0, 0), (1, 3), (2, 1), (3, 3), (4, 1)]
+    elements = SVector{3,Int64}[(1, 3, 2), (2, 4, 3), (3, 5, 4)]
+    coarse = Mesh(Tri, nodes, elements)
+    local_multigrid(coarse, fine_ref)
+end
+
+function local_multigrid(coarse, fine_ref = 6)
+    # Build a coarse mesh
     connectivity = inspect_coarse_grid(coarse)
 
     # Build the factorized coarse grid operator
@@ -394,7 +417,6 @@ function local_multigrid(coarse_ref = 6, fine_ref = 6)
     # Allocate the state vecs for each level
     lvls = build_levels(As)
 
-    fill!(lvls[end].x, 0.0)
     assemble_const_load_vector!(lvls[end].b, coarse, fine, connectivity, lvls[end].A.edge_indices)
 
     @show length(lvls[end].x)
@@ -402,7 +424,11 @@ function local_multigrid(coarse_ref = 6, fine_ref = 6)
     # Finally build the multigrid struct
     mg = Multigrid(lvls, Ps, A_coarse)
     
-    @time my_vcycle!(mg, fine_ref, 2) 
+    try my_vcycle!(mg, fine_ref, 2) 
+
+    catch e
+        println(e)
+    end
 
     return mg, coarse
 end
@@ -446,6 +472,7 @@ end
 Run a single v-cycle of multigrid.
 """
 function my_vcycle!(mg::Multigrid, idx::Int, steps::Int)
+
     if idx == 1
         println("TODO coarse grid stuff!")
         solve_low_dimensional_system!(mg)
@@ -466,9 +493,15 @@ function my_vcycle!(mg::Multigrid, idx::Int, steps::Int)
 
         # Compute the residual r = Ax - b
         residual!(curr)
+
+        # sanity_check(mg, idx)
         
         # Restrict
         At_mul_B!(next.b, P, curr.r)
+
+        # TODO: move this into the restriction operator
+        combine_edges!(next.b, next.A.connectivity.edge_to_elements, next.A.coarse.elements, next.A.edge_indices)
+        combine_vertices!(next.b, next.A.connectivity.node_to_elements, next.A.coarse.elements)
 
         # Solve on the next level
         my_vcycle!(mg, idx - 1, steps)
@@ -476,10 +509,10 @@ function my_vcycle!(mg::Multigrid, idx::Int, steps::Int)
         println("Level ", idx)
 
         # Interpolate (x -= P * (P'AP) \ (P' b))
-        A_mul_B!(-1.0, P, next.x, 1.0, curr.x)
+        # A_mul_B!(-1.0, P, next.x, 1.0, curr.x)
         
-        # Smoothing steps with Richardson iteration
-        smooth!(curr, steps)
+        # # Smoothing steps with Richardson iteration
+        # smooth!(curr, steps)
     end
 end
 
@@ -505,4 +538,26 @@ function solve_low_dimensional_system!(mg::Multigrid)
         end
     end
 
+end
+
+function sanity_check(mg, idx)
+    # Check whether the load `b` is still correct
+    for (k, vec) in ((:b, mg.fine[idx].b), (:r, mg.fine[idx].r))
+        xs = fill(NaN, length(mg.fine[idx].A.coarse.nodes))
+
+        println(idx, k)
+
+        for (j, elements) in enumerate(mg.fine[idx].A.coarse.elements)
+            for (i, node) in enumerate(elements)
+                if xs[node] === NaN
+                    xs[node] = vec[i, j]
+                else
+                    if xs[node] != vec[i, j]
+                        println(xs[node], ' ', vec[i,j])
+                        throw("Whoops!")
+                    end
+                end
+            end
+        end
+    end
 end
