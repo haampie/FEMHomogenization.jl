@@ -1,7 +1,9 @@
 using FEMHomogenization
 
 function run()
-    FEMHomogenization.coarse_grid_with_local_refinement()
+    FEMHomogenization.example_one()
+    Profile.clear_malloc_data()
+    @profile FEMHomogenization.example_one()
 end
 
-println(run())
+run()

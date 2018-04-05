@@ -37,12 +37,12 @@ Store an edge uniquely
 """
 ↔(a, b) = a < b ? a → b : b → a
 
-struct FullLinearOperator
-    coarse
-    fine
-    ops
-    edge_indices
-    connectivity
+struct FullLinearOperator{Tc,Tf,Tops,Tedg,Tcon}
+    coarse::Tc
+    fine::Tf
+    ops::Tops
+    edge_indices::Tedg
+    connectivity::Tcon
 end
 
 struct Interpolation{T}
@@ -179,7 +179,7 @@ end
 Combine the values along the edges
 """
 function combine_edges!(y, edge_to_elements, coarse_elements, edge_indices)
-    println("Combining")
+
     @inbounds for (edge, elements) in edge_to_elements
         # Skip boundary edges
         length(elements) != 2 && continue
@@ -192,8 +192,6 @@ function combine_edges!(y, edge_to_elements, coarse_elements, edge_indices)
         snd_local_edge, snd_dir = edge_number_and_orientation(coarse_elements[e2], edge)
         fst_edge = edge_indices.edges[fst_local_edge]
         snd_edge = edge_indices.edges[snd_local_edge]
-
-        @show (e1, e2) edge (fst_local_edge, snd_local_edge) (fst_dir, snd_dir)
         
         range_one = 1 : length(fst_edge)
         range_two = fst_dir == snd_dir ? StepRange(range_one) : reverse(range_one)
@@ -206,7 +204,6 @@ function combine_edges!(y, edge_to_elements, coarse_elements, edge_indices)
             y[idx_two, e2] = sum
         end
     end
-    println("done")
     
     y
 end
@@ -352,8 +349,8 @@ function how_far_can_we_go(coarse_ref, fine_ref)
     nothing
 end
 
-build_levels(As) = map(As) do A
-    return FineLevel(
+build_levels(As::Vector{T}) where {T} = map(As) do A
+    return FineLevel{T,Matrix{Float64},Float64}(
         A,
         zeros(length(A.fine.nodes), length(A.coarse.elements)),
         zeros(length(A.fine.nodes), length(A.coarse.elements)),
@@ -362,24 +359,24 @@ build_levels(As) = map(As) do A
     )
 end
 
-function example_one(fine_ref = 6)
+function example_one(fine_ref = 6, coarse_ref = 6)
     nodes = SVector{2,Float64}[(0, 0), (1, 3), (2, 1), (3, 3), (4, 1)]
     elements = SVector{3,Int64}[(1, 2, 3), (2, 3, 4), (3, 4, 5)]
-    coarse = Mesh(Tri, nodes, elements)
+    coarse = refine(Mesh(Tri, nodes, elements), coarse_ref)
     local_multigrid(coarse, fine_ref)
 end
 
-function example_two(fine_ref = 6)
+function example_two(fine_ref = 6, coarse_ref = 6)
     nodes = SVector{2,Float64}[(0, 0), (1, 3), (3, 3), (2, 1), (4, 1)]
     elements = SVector{3,Int64}[(1, 2, 4), (2, 3, 4), (3, 4, 5)]
-    coarse = Mesh(Tri, nodes, elements)
+    coarse = refine(Mesh(Tri, nodes, elements), coarse_ref)
     local_multigrid(coarse, fine_ref)
 end
 
-function example_three(fine_ref = 6)
+function example_three(fine_ref = 6, coarse_ref = 6)
     nodes = SVector{2,Float64}[(0, 0), (1, 3), (2, 1), (3, 3), (4, 1)]
     elements = SVector{3,Int64}[(1, 3, 2), (2, 4, 3), (3, 5, 4)]
-    coarse = Mesh(Tri, nodes, elements)
+    coarse = refine(Mesh(Tri, nodes, elements), coarse_ref)
     local_multigrid(coarse, fine_ref)
 end
 
@@ -424,27 +421,23 @@ function local_multigrid(coarse, fine_ref = 6)
     # Finally build the multigrid struct
     mg = Multigrid(lvls, Ps, A_coarse)
     
-    try my_vcycle!(mg, fine_ref, 2) 
-
-    catch e
-        println(e)
-    end
+    @time my_vcycle!(mg, fine_ref, 2) 
 
     return mg, coarse
 end
 
-struct FineLevel{To,Tv}
+struct FineLevel{To,Tv,Tomega}
     A::To # Our linear operator
     x::Tv # Approximate solution to Ax=b
     b::Tv # rhs
     r::Tv # residual r = Ax - b
-    ω
+    ω::Tomega
 end
 
-struct Multigrid{Tv,To,Tp}
-    fine::Vector{FineLevel{To,Tv}}
+struct Multigrid{Tf,Tp,Tc}
+    fine::Vector{Tf}
     Ps::Vector{Tp}
-    A_coarse
+    A_coarse::Tc
 end
 
 function residual!(lvl::FineLevel)
@@ -509,10 +502,10 @@ function my_vcycle!(mg::Multigrid, idx::Int, steps::Int)
         println("Level ", idx)
 
         # Interpolate (x -= P * (P'AP) \ (P' b))
-        # A_mul_B!(-1.0, P, next.x, 1.0, curr.x)
+        A_mul_B!(-1.0, P, next.x, 1.0, curr.x)
         
         # # Smoothing steps with Richardson iteration
-        # smooth!(curr, steps)
+        smooth!(curr, steps)
     end
 end
 
