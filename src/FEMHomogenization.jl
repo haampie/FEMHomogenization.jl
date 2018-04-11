@@ -11,6 +11,7 @@ include("elements.jl")
 include("quadrature.jl")
 include("meshing.jl")
 include("assembly.jl")
+include("assembly_elementwise.jl")
 include("refinement.jl")
 
 include("tet/elements.jl")

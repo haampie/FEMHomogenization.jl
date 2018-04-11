@@ -71,3 +71,18 @@ function unit_square(refinements::Int = 4)
 
     return mesh, graph, interior
 end
+
+function generic_square(refinements::Int = 4, x = 1.0, y = 1.0)
+    nodes = SVector{2,Float64}[(0, 0), (x, 0), (x, y), (0, y)]
+    triangles = SVector{3,Int64}[(1, 2, 3), (1, 4, 3)]
+    mesh = Mesh(Tri, nodes, triangles)
+
+    graph, boundary, interior = construct_graph_and_find_interior_nodes(mesh)
+
+    for i = 1 : refinements
+        mesh = refine(mesh, graph)
+        graph, boundary, interior = construct_graph_and_find_interior_nodes(mesh)
+    end
+
+    return mesh, graph, interior
+end

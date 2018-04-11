@@ -33,6 +33,9 @@ function binary_search(v::AbstractVector, x, lo::Ti, hi::Ti) where {Ti <: Intege
     return hi
 end
 
+# f(n, σ) = exp.(-σ .* (linspace(-1, 1, n) .^ 2 .+ linspace(-1, 1, n)' .^ 2))
+# contourf(conv2(randn(500, 500), f(20, 1.0)))
+
 """
     complement(sorted_vec, n)
 
@@ -133,5 +136,21 @@ function save_file(name::String, m::Mesh{Tet}, data::T) where {T <: AbstractArra
     triangle_list = MeshCell[MeshCell(VTKCellTypes.VTK_TETRA, Vector(t)) for t in m.elements]
     vtkfile = vtk_grid(name, node_matrix, triangle_list, compress=false)
     vtk_point_data(vtkfile, data, "f")
+    vtk_save(vtkfile)
+end
+
+function save_to_vtk(name::String, m::Mesh{Tri}, pointdata::Dict{String,S}, celldata::Dict{String,T}) where {S,T}
+    node_matrix = [x[i] for i = 1:2, x in m.nodes]
+    triangle_list = MeshCell[MeshCell(VTKCellTypes.VTK_TRIANGLE, Vector(t)) for t in m.elements]
+    vtkfile = vtk_grid(name, node_matrix, triangle_list, compress=false)
+
+    for (v_name, data) in pointdata
+        vtk_point_data(vtkfile, data, v_name)
+    end
+
+    for (v_name, data) in celldata
+        vtk_cell_data(vtkfile, data, v_name)
+    end
+
     vtk_save(vtkfile)
 end
