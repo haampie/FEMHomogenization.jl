@@ -298,6 +298,12 @@ function interior_subdomain(mesh, boundary_layer_size, domain_width)
     return unique(nodes_in_circle), elements_in_circle
 end
 
+"""
+    ens(sr, cr, steps)
+
+We refine a square `sr` times as a coarse grid on which we build the checkerboard pattern.
+Then we refine the cells `cr` times to construct a fine FEM mesh.
+"""
 function ens(square_refine = 6, cell_refine = 2, steps = 2)
     width = 2^square_refine
     mesh, graph, interior = generic_square(square_refine + cell_refine, width, width)
@@ -314,8 +320,10 @@ function ens(square_refine = 6, cell_refine = 2, steps = 2)
     M_int = M[interior, interior]
     A_int = A[interior, interior]
 
-    # Build the initial rhs w/ ξ = [1 0]
+    # Build the initial rhs with ξ = [1 0]
     ξ = (1.0, 0.0)
+
+    # Partial integration of the term appearing in the paper
     load = (u, idx) -> -(a11(idx) * ξ[1] * u.∇ϕ[1] + a22(idx) * ξ[2] * u.∇ϕ[2])
 
     # Construct rhs
@@ -329,26 +337,29 @@ function ens(square_refine = 6, cell_refine = 2, steps = 2)
     vs = Vector{Float64}[copy(v)]
 
     for i = 1 : steps
-        println(i)
+        println("Step = ", i)
         λ /= 2
         fill!(v, 0.0)
-        v_int .= (λ .* M_int .+ A_int) \ (λ .* M_int * v_int)
+        @time myA = λ .* M_int .+ A_int
+        @time myRhs = λ .* M_int * v_int
+        @time v_int .= myA \ myRhs
         v[interior] .= v_int
         push!(vs, copy(v))
     end
 
-    σ = 0.0
-    λ = 1.0
-
+    # We average over a shrinking domain Br, so we allocate some vector that will be zeroed
+    # out on Ω \ Br.
     v_prev_masked = zeros(length(mesh.nodes))
     v_curr_masked = zeros(length(mesh.nodes))
     ones_masked = zeros(length(mesh.nodes))
-
-    boundary_layer = 3.0
-
     smaller_domain = zeros(length(mesh.elements))
 
-    masked_elements = []
+    # The boundary layer is initially 3 cells big.
+    boundary_layer = 3.0
+    masked_elements = Vector{Float64}[]
+
+    σ = 0.0
+    λ = 1.0
 
     for k = 1 : steps + 1
 
@@ -366,6 +377,7 @@ function ens(square_refine = 6, cell_refine = 2, steps = 2)
 
         push!(masked_elements, copy(smaller_domain))
 
+        # The first k is special: use partial integration again.
         if k == 1
             v_prev_masked[mask] .= b[mask]
             δσ = λ * (dot(v_prev_masked, v_curr_masked) + dot(v_curr_masked, M * v_curr_masked)) / area
@@ -378,6 +390,7 @@ function ens(square_refine = 6, cell_refine = 2, steps = 2)
         σ += δσ
         @show δσ
 
+        # Double the boundary layer size
         boundary_layer *= 2
     end
 
