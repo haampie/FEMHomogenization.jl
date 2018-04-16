@@ -304,7 +304,7 @@ end
 We refine a square `sr` times as a coarse grid on which we build the checkerboard pattern.
 Then we refine the cells `cr` times to construct a fine FEM mesh.
 """
-function ens(square_refine = 6, cell_refine = 2, steps = 2)
+function ens(square_refine = 6, cell_refine = 2, steps = 2, boundary_size = 3.0)
     width = 2^square_refine
     mesh, graph, interior = generic_square(square_refine + cell_refine, width, width)
     a11, a22 = checkerboard_elements(mesh, width), checkerboard_elements(mesh, width)
@@ -340,22 +340,14 @@ function ens(square_refine = 6, cell_refine = 2, steps = 2)
         println("Step = ", i)
         λ /= 2
         fill!(v, 0.0)
-        @time myA = λ .* M_int .+ A_int
-        @time myRhs = λ .* M_int * v_int
-        @time v_int .= myA \ myRhs
+        @time v_int .= (λ .* M_int .+ A_int) \ (λ .* M_int * v_int)
         v[interior] .= v_int
         push!(vs, copy(v))
     end
 
-    # We average over a shrinking domain Br, so we allocate some vector that will be zeroed
-    # out on Ω \ Br.
-    v_prev_masked = zeros(length(mesh.nodes))
-    v_curr_masked = zeros(length(mesh.nodes))
-    ones_masked = zeros(length(mesh.nodes))
     smaller_domain = zeros(length(mesh.elements))
 
     # The boundary layer is initially 3 cells big.
-    boundary_layer = 3.0
     masked_elements = Vector{Float64}[]
 
     σ = 0.0
@@ -363,27 +355,24 @@ function ens(square_refine = 6, cell_refine = 2, steps = 2)
 
     for k = 1 : steps + 1
 
-        mask, small_domain_elements = interior_subdomain(mesh, boundary_layer, width)
+        mask, small_domain_elements = interior_subdomain(mesh, boundary_size, width)
 
-        fill!(v_prev_masked, 0.0)
-        fill!(v_curr_masked, 0.0)
-        fill!(ones_masked, 0.0)
+        M_small = M[mask, mask]
+
         fill!(smaller_domain, 0.0)
-
         smaller_domain[small_domain_elements] .= 1.0
-        v_curr_masked[mask] .= vs[k][mask]
-        ones_masked[mask] .= 1.0
-        area = dot(ones_masked, M * ones_masked)
-
         push!(masked_elements, copy(smaller_domain))
+
+        v_curr = vs[k][mask]
+        area = sum(M_small)
+
+        @show area
 
         # The first k is special: use partial integration again.
         if k == 1
-            v_prev_masked[mask] .= b[mask]
-            δσ = λ * (dot(v_prev_masked, v_curr_masked) + dot(v_curr_masked, M * v_curr_masked)) / area
+            δσ = λ * (dot(b[mask], v_curr) + dot(v_curr, M_small * v_curr)) / area
         else
-            v_prev_masked[mask] .= vs[k - 1][mask]
-            δσ = λ * (dot(v_prev_masked, M * v_curr_masked) + dot(v_curr_masked, M * v_curr_masked)) / area
+            δσ = λ * (dot(vs[k - 1][mask], M_small * v_curr) + dot(v_curr, M_small * v_curr)) / area
         end
 
         λ *= 2
@@ -391,10 +380,10 @@ function ens(square_refine = 6, cell_refine = 2, steps = 2)
         @show δσ
 
         # Double the boundary layer size
-        boundary_layer *= 2
+        boundary_size *= 2
     end
 
-    @show 5.0 - σ
+    @show mean((1.0, 9.0)) - σ
 
     save_to_vtk("results", mesh, Dict(
         "v1"    => vs[1],
@@ -409,3 +398,114 @@ function ens(square_refine = 6, cell_refine = 2, steps = 2)
     ))
 end
 
+function compare_refinements(times = 3)
+    a_1 = Vector{Float64}(times)
+    for i = 1 : times
+        a_1[i] = ens(6, 1, 3, 1.0)
+        @show a_1[i]
+    end
+    a_2 = Vector{Float64}(times)
+    for i = 1 : times
+        a_2[i] = ens(6, 2, 3, 1.0)
+        @show a_2[i]
+    end
+    a_3 = Vector{Float64}(times)
+    for i = 1 : times
+        a_3[i] = ens(6, 3, 3, 1.0)
+        @show a_3[i]
+    end
+    a_4 = Vector{Float64}(times)
+    for i = 1 : times
+        a_4[i] = ens(6, 4, 3, 1.0)
+        @show a_4[i]
+    end
+    a_5 = Vector{Float64}(times)
+    for i = 1 : times
+        a_5[i] = ens(6, 5, 3, 1.0)
+        @show a_5[i]
+    end
+
+    # [3.30416, 3.30485, 3.26204, 3.28313, 3.37068], 
+    # [3.07902, 3.05786, 3.09367, 3.10974, 3.12865], 
+    # [2.98547, 3.01343, 3.0681, 3.00767, 3.06668], 
+    # [3.01418, 2.98567, 2.97544, 2.97493, 2.98084]
+    a_1, a_2, a_3, a_4, a_5
+end
+
+function compare_boundary_layers(times = 5)
+    thicknesses = (0.0, 1.0, 3.0)
+    results = []
+
+    for thickness in thicknesses
+        v = Vector{Float64}(times)
+        for i = 1 : times
+            v[i] = ens(6, 4, 3, thickness)
+            @show v[i]
+        end
+        push!(results, v)
+    end
+
+    #(0.0, 1.0, 3.0)
+    #[3.0946, 3.0702, 3.05818, 3.05956, 3.09375]
+    #[2.96739, 3.0133, 2.96161, 2.9851, 2.93808]
+    #[2.95565, 2.98354, 2.93638, 2.98629, 2.96615]
+
+    thicknesses, results
+end
+
+"""
+Solve the problem
+
+  (λ + ∇⋅a∇)u = λ on Ω 
+            u = 0 on ∂Ω
+
+to inspect the boundary layer size; u ≡ 1 on the center of the domain, u = 0 on the boundary
+"""
+function show_boundary_size(square_refine = 6, cell_refine = 2, λ = 1.0)
+    width = 2^square_refine
+    mesh, graph, interior = generic_square(square_refine + cell_refine, width, width)
+
+    # Make a cut at y = width / 2
+    middle_nodes = sort!(find(node -> abs(node[2] - width/2) ≤ 10eps(), mesh.nodes), by = node -> mesh.nodes[node][1])
+    x_coords = map(idx -> mesh.nodes[idx][1], middle_nodes)
+
+    a11 = checkerboard_elements(mesh, width)
+    a22 = checkerboard_elements(mesh, width)
+
+    bf_mass = (u, v, x) -> u.ϕ * v.ϕ
+    bf_oscillating = (u, v, idx) -> a11(idx) * u.∇ϕ[1] * v.∇ϕ[1] + a22(idx) * u.∇ϕ[2] * v.∇ϕ[2]
+    
+    M = assemble_matrix(mesh, bf_mass)
+    A = assemble_matrix_elementwise(mesh, bf_oscillating)
+    b = assemble_rhs(mesh, x -> λ)
+
+    M_int = M[interior, interior]
+    A_int = A[interior, interior]
+    b_int = b[interior]
+    x = zeros(length(mesh.nodes))
+
+    @time x[interior] .= (λ .* M_int .+ A_int) \ b_int
+
+    x_line = x[middle_nodes]
+    inds_above_dot95 = extrema(find(x -> x > 0.95, x_line))
+
+    return x_coords, x_line, (x_coords[inds_above_dot95[1]], x_coords[inds_above_dot95[2]])
+
+    save_to_vtk("boundary_layer", mesh, Dict(
+        "x" => x
+    ), Dict(
+        "a11" => a11.(1 : length(mesh.elements)),
+        "a22" => a22.(1 : length(mesh.elements))
+    ))
+end
+
+# function generate_field(n, k, μ = 1.0, σ = 1.0)
+#     f(m, μ, σ) = μ .* exp.(-σ .* (linspace(-1, 1, m).^2 .+ linspace(-1, 1, m)'.^2))
+#     conv2(exp.(randn(n, n)), f(k, 0.1, 1.0))[k:end-k,k:end-k]
+# end
+
+# function gaussian_example(width = 500, kernel = 20)
+#     field = generate_field(width, kernel)
+
+#     return field
+# end
