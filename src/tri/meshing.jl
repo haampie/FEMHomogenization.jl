@@ -86,3 +86,47 @@ function generic_square(refinements::Int = 4, x = 1.0, y = 1.0)
 
     return mesh, graph, interior
 end
+
+"""
+Divide the domain [0, width] × [0, height] into a mesh of (n + 1) × (m + 1) grid
+points / n × m cells.
+"""
+function rectangle(m, n, width, height)
+    nodes = Vector{SVector{2,Float64}}((n+1) * (m+1))
+    elements = Vector{SVector{3,Int64}}(2 * n * m)
+    interior = Vector{Int64}((n - 1) * (m - 1))
+
+    Δx = width / m
+    Δy = height / n
+
+    node_idx = 1
+
+    # Nodes
+    @inbounds for j = 1 : n + 1, i = 1 : m + 1
+        nodes[node_idx] = ((i - 1) * Δx, (j - 1) * Δy)
+        node_idx += 1
+    end
+
+    node_idx = 1
+    el_idx = 1
+
+    # Elements
+    @inbounds for j = 1 : n
+        for i = 1 : m
+            elements[el_idx + 0] = (node_idx, node_idx + m + 1, node_idx + m + 2)
+            elements[el_idx + 1] = (node_idx, node_idx + 1, node_idx + m + 2)
+            el_idx += 2
+            node_idx += 1
+        end
+        node_idx += 1
+    end
+
+    # Interior
+    node_idx = 1
+    @inbounds for j = 2 : n, i = 2 : m
+        interior[node_idx] = (j - 1) * (m + 1) + i
+        node_idx += 1
+    end
+
+    return Mesh(Tri, nodes, elements), interior
+end

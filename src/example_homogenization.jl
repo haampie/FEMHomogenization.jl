@@ -274,14 +274,13 @@ function example2(c = 40, n = 513, λ = 0.25)
     return exact, steps, v
 end
 
-function interior_subdomain(mesh, boundary_layer_size, domain_width)
-    center = @SVector [domain_width / 2, domain_width / 2]
-    R = domain_width / 2 - boundary_layer_size
+function interior_subdomain(mesh, total_width, interior_width)
+    center = @SVector [total_width / 2, total_width / 2]
     
     # Find the elements in the R circle
     elements_in_circle = find(el -> begin
         midpoint = mapreduce(i -> mesh.nodes[i], +, el) / 3
-        norm(center - midpoint, Inf) < R
+        norm(center - midpoint, Inf) < interior_width
     end, mesh.elements)
 
     # Collect the nodes of these elements
@@ -304,13 +303,20 @@ end
 We refine a square `sr` times as a coarse grid on which we build the checkerboard pattern.
 Then we refine the cells `cr` times to construct a fine FEM mesh.
 """
-function ens(square_refine = 6, cell_refine = 2, steps = 2, boundary_size = 3.0)
+function ens(square_refine::Int = 6, cell_refine::Int = 2, steps::Int = 2, boundary_size::Int = 10)
     width = 2^square_refine
-    mesh, graph, interior = generic_square(square_refine + cell_refine, width, width)
-    a11, a22 = checkerboard_elements(mesh, width), checkerboard_elements(mesh, width)
+    total_width = width + 2 * boundary_size
+
+    # We do `cell_refine` more refinements of each coarse grid cell
+    grid_cells = total_width * 2^cell_refine
+    mesh, interior = rectangle(grid_cells, grid_cells, total_width, total_width)
+
+    a11 = checkerboard_elements(mesh, total_width)
+    a22 = checkerboard_elements(mesh, total_width)
 
     println("Total nodes: ", length(mesh.nodes))
-    println("Ω = [0, ", width, "] × [0, ", width, "]")
+    println("Ω (with boundary layer) = [0, ", total_width, "] × [0, ", total_width, "]")
+    println("Ω (no boundary layer)   = [", boundary_size, ", ", total_width - boundary_size, "] × [", boundary_size, ", ", total_width - boundary_size, "]")
 
     bf_mass = (u, v, x) -> u.ϕ * v.ϕ
     bf_oscillating = (u, v, idx) -> a11(idx) * u.∇ϕ[1] * v.∇ϕ[1] + a22(idx) * u.∇ϕ[2] * v.∇ϕ[2]
@@ -350,12 +356,15 @@ function ens(square_refine = 6, cell_refine = 2, steps = 2, boundary_size = 3.0)
     # The boundary layer is initially 3 cells big.
     masked_elements = Vector{Float64}[]
 
-    σ = 0.0
+    σ² = 0.0
     λ = 1.0
 
-    for k = 1 : steps + 1
+    σ²s = Vector{Float64}(steps)
 
-        mask, small_domain_elements = interior_subdomain(mesh, boundary_size, width)
+    interior_width = float(width)
+
+    for k = 1 : steps
+        mask, small_domain_elements = interior_subdomain(mesh, total_width, ceil(interior_width))
 
         M_small = M[mask, mask]
 
@@ -366,8 +375,6 @@ function ens(square_refine = 6, cell_refine = 2, steps = 2, boundary_size = 3.0)
         v_curr = vs[k][mask]
         area = sum(M_small)
 
-        @show area
-
         # The first k is special: use partial integration again.
         if k == 1
             δσ = λ * (dot(b[mask], v_curr) + dot(v_curr, M_small * v_curr)) / area
@@ -376,26 +383,49 @@ function ens(square_refine = 6, cell_refine = 2, steps = 2, boundary_size = 3.0)
         end
 
         λ *= 2
-        σ += δσ
+        σ² += δσ
+        @show area
         @show δσ
 
-        # Double the boundary layer size
-        boundary_size *= 2
+        σ²s[k] = σ²
+
+        # Increase the size of the boundary layer
+        interior_width /= √2
     end
 
-    @show mean((1.0, 9.0)) - σ
+    return σ²s
 
-    save_to_vtk("results", mesh, Dict(
-        "v1"    => vs[1],
-        "v2"    => vs[2],
-        "v3"    => vs[3]
-    ), Dict(
-        "a11"   => a11.(1 : length(mesh.elements)),
-        "a22"   => a22.(1 : length(mesh.elements)),
-        "mask1" => masked_elements[1],
-        "mask2" => masked_elements[2],
-        "mask3" => masked_elements[3]
-    ))
+    # @show σ²s
+
+    # save_to_vtk("results", mesh, Dict(
+    #     "v1"    => vs[1],
+    #     "v2"    => vs[2],
+    #     "v3"    => vs[3]
+    # ), Dict(
+    #     "a11"   => a11.(1 : length(mesh.elements)),
+    #     "a22"   => a22.(1 : length(mesh.elements)),
+    #     "mask1" => masked_elements[1],
+    #     "mask2" => masked_elements[2],
+    #     "mask3" => masked_elements[3]
+    # ))
+end
+
+function theorem_one_point_two(;times = 5, ref_coarse = 6, ref_fine = 3)
+
+    boundary = 5 * max(1, ref_coarse) * floor(Int, sqrt(1 + 2 ^ (ref_coarse / 2)))
+    steps = ref_coarse
+
+    @show boundary
+
+    results = zeros(times, ref_coarse)
+    for i = 1 : times
+        results[i, :] .= ens(ref_coarse, ref_fine, steps, boundary)
+        @show 2.0 .- results
+    end
+
+    means = [sqrt(mean((2.0 .- results[:, i]) .^ 2)) for i = 1 : steps]
+
+    return results, means
 end
 
 function compare_refinements(times = 3)
@@ -433,13 +463,13 @@ function compare_refinements(times = 3)
 end
 
 function compare_boundary_layers(times = 5)
-    thicknesses = (0.0, 1.0, 3.0)
+    thicknesses = (10.0, 3.0, 0.0)
     results = []
 
     for thickness in thicknesses
         v = Vector{Float64}(times)
         for i = 1 : times
-            v[i] = ens(6, 4, 3, thickness)
+            v[i] = ens(7, 4, 3, thickness)
             @show v[i]
         end
         push!(results, v)
@@ -461,7 +491,7 @@ Solve the problem
 
 to inspect the boundary layer size; u ≡ 1 on the center of the domain, u = 0 on the boundary
 """
-function show_boundary_size(square_refine = 6, cell_refine = 2, λ = 1.0)
+function show_boundary_size(;square_refine = 6, cell_refine = 2, λ = 1.0)
     width = 2^square_refine
     mesh, graph, interior = generic_square(square_refine + cell_refine, width, width)
 
@@ -487,9 +517,12 @@ function show_boundary_size(square_refine = 6, cell_refine = 2, λ = 1.0)
     @time x[interior] .= (λ .* M_int .+ A_int) \ b_int
 
     x_line = x[middle_nodes]
-    inds_above_dot95 = extrema(find(x -> x > 0.95, x_line))
+    inds_above_dot98 = extrema(find(x -> x > 0.98, x_line))
 
-    return x_coords, x_line, (x_coords[inds_above_dot95[1]], x_coords[inds_above_dot95[2]])
+    x_above_dot98 = (x_coords[inds_above_dot98[1]],x_coords[inds_above_dot98[2]])
+    @show inds_above_dot98 x_above_dot98
+
+    # return x_coords, x_line, 
 
     save_to_vtk("boundary_layer", mesh, Dict(
         "x" => x
