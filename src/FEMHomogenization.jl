@@ -2,6 +2,7 @@ module FEMHomogenization
 
 using StaticArrays
 using WriteVTK
+using JLD
 
 import Base: size
 

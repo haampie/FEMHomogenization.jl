@@ -420,12 +420,13 @@ function theorem_one_point_two(;times = 5, ref_coarse = 6, ref_fine = 3)
     results = zeros(times, ref_coarse)
     for i = 1 : times
         results[i, :] .= ens(ref_coarse, ref_fine, steps, boundary)
-        @show 2.0 .- results
     end
 
-    means = [sqrt(mean((2.0 .- results[:, i]) .^ 2)) for i = 1 : steps]
+    # means = [sqrt(mean((2.0 .- results[:, i]) .^ 2)) for i = 1 : steps]
 
-    return results, means
+    return results
+
+    # save(file, "results", results, "means", means)
 end
 
 function compare_refinements(times = 3)
