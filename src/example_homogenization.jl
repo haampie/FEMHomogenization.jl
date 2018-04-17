@@ -274,19 +274,23 @@ function example2(c = 40, n = 513, λ = 0.25)
     return exact, steps, v
 end
 
+"""
+Tests whether each element belongs to the interior of the domain.
+Returns a (potentially) unsorted list of nodes and a sorted list of element ids
+"""
 function interior_subdomain(mesh, total_width, interior_width)
     center = @SVector [total_width / 2, total_width / 2]
     
     # Find the elements in the R circle
-    elements_in_circle = find(el -> begin
+    elemens_in_interior = find(el -> begin
         midpoint = mapreduce(i -> mesh.nodes[i], +, el) / 3
-        norm(center - midpoint, Inf) < interior_width
+        norm(center - midpoint, Inf) < interior_width / 2
     end, mesh.elements)
 
     # Collect the nodes of these elements
-    nodes_in_circle = Vector{Int}(3 * length(elements_in_circle))
+    nodes_in_circle = Vector{Int}(3 * length(elemens_in_interior))
     idx = 1
-    for el_idx in elements_in_circle
+    for el_idx in elemens_in_interior
         element = mesh.elements[el_idx]
         nodes_in_circle[idx + 0] = element[1]
         nodes_in_circle[idx + 1] = element[2]
@@ -294,7 +298,25 @@ function interior_subdomain(mesh, total_width, interior_width)
         idx += 3
     end
 
-    return unique(nodes_in_circle), elements_in_circle
+    return unique(nodes_in_circle), elemens_in_interior
+end
+
+function example_interior_domain(width::Int, interior_width::Int)
+    mesh, interior = rectangle(4*width, 4*width, width, width)
+    nodes, elements = interior_subdomain(mesh, width, interior_width)
+    M = assemble_matrix(mesh, (u, v, x) -> u.ϕ * v.ϕ, elements)
+
+    vec = ones(length(mesh.nodes))
+    @show dot(vec, M * vec)
+    @show interior_width * interior_width
+
+    xs = zeros(length(mesh.nodes))
+    xs[nodes] .= 1.0
+
+    ys = zeros(length(mesh.elements))
+    ys[elements] .= 1.0
+
+    save_to_vtk("part_of_domain", mesh, Dict("xs" => xs), Dict("ys" => ys))
 end
 
 """
@@ -318,9 +340,8 @@ function ens(square_refine::Int = 6, cell_refine::Int = 2, steps::Int = 2, bound
     println("Ω (with boundary layer) = [0, ", total_width, "] × [0, ", total_width, "]")
     println("Ω (no boundary layer)   = [", boundary_size, ", ", total_width - boundary_size, "] × [", boundary_size, ", ", total_width - boundary_size, "]")
 
-    bf_mass = (u, v, x) -> u.ϕ * v.ϕ
     bf_oscillating = (u, v, idx) -> a11(idx) * u.∇ϕ[1] * v.∇ϕ[1] + a22(idx) * u.∇ϕ[2] * v.∇ϕ[2]
-    M = assemble_matrix(mesh, bf_mass)
+    M = assemble_matrix(mesh, (u, v, x) -> u.ϕ * v.ϕ)
     A = assemble_matrix_elementwise(mesh, bf_oscillating)
 
     M_int = M[interior, interior]
@@ -352,8 +373,6 @@ function ens(square_refine::Int = 6, cell_refine::Int = 2, steps::Int = 2, bound
     end
 
     smaller_domain = zeros(length(mesh.elements))
-
-    # The boundary layer is initially 3 cells big.
     masked_elements = Vector{Float64}[]
 
     σ² = 0.0
@@ -364,27 +383,28 @@ function ens(square_refine::Int = 6, cell_refine::Int = 2, steps::Int = 2, bound
     interior_width = float(width)
 
     for k = 1 : steps
-        mask, small_domain_elements = interior_subdomain(mesh, total_width, ceil(interior_width))
+        mask, interior_elements = interior_subdomain(mesh, total_width, ceil(interior_width))
 
-        M_small = M[mask, mask]
+        M_small = assemble_matrix(mesh, (u, v, x) -> u.ϕ * v.ϕ, interior_elements)
+        b_small = assemble_rhs_with_gradient(mesh, load, interior_elements)
 
         fill!(smaller_domain, 0.0)
-        smaller_domain[small_domain_elements] .= 1.0
+        smaller_domain[interior_elements] .= 1.0
         push!(masked_elements, copy(smaller_domain))
 
-        v_curr = vs[k][mask]
-        area = sum(M_small)
+        area = ceil(interior_width)^2
+        @show sum(M_small)
+        @show area
 
         # The first k is special: use partial integration again.
         if k == 1
-            δσ = λ * (dot(b[mask], v_curr) + dot(v_curr, M_small * v_curr)) / area
+            δσ = λ * (dot(b_small, vs[k]) + dot(vs[k], M_small * vs[k])) / area
         else
-            δσ = λ * (dot(vs[k - 1][mask], M_small * v_curr) + dot(v_curr, M_small * v_curr)) / area
+            δσ = λ * (dot(vs[k - 1], M_small * vs[k]) + dot(vs[k], M_small * vs[k])) / area
         end
 
         λ *= 2
         σ² += δσ
-        @show area
         @show δσ
 
         σ²s[k] = σ²
@@ -410,7 +430,7 @@ function ens(square_refine::Int = 6, cell_refine::Int = 2, steps::Int = 2, bound
     # ))
 end
 
-function theorem_one_point_two(;times = 5, ref_coarse = 6, ref_fine = 3)
+function theorem_one_point_two(;times = 5, ref_coarse = 6, ref_fine = 3, file = "/mathwork/stoppeh1/data_2.txt")
 
     boundary = 5 * max(1, ref_coarse) * floor(Int, sqrt(1 + 2 ^ (ref_coarse / 2)))
     steps = ref_coarse
@@ -420,13 +440,14 @@ function theorem_one_point_two(;times = 5, ref_coarse = 6, ref_fine = 3)
     results = zeros(times, ref_coarse)
     for i = 1 : times
         results[i, :] .= ens(ref_coarse, ref_fine, steps, boundary)
+        @show results[i, :]
     end
 
     # means = [sqrt(mean((2.0 .- results[:, i]) .^ 2)) for i = 1 : steps]
 
-    return results
-
-    # save(file, "results", results, "means", means)
+    writedlm(file, results)
+    
+    return nothing
 end
 
 function compare_refinements(times = 3)
