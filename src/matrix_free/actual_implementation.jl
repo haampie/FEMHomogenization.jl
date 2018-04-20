@@ -13,11 +13,6 @@ struct LocalIntegralParts{Tv,Ti}
     A22::SparseMatrixCSC{Tv,Ti}
 end
 
-struct Edge{Ti}
-    from::Ti
-    to::Ti
-end
-
 struct Connectivity{Ti}
     node_to_elements::Dict{Ti,Vector{Ti}}
     edge_to_elements::Dict{Edge{Ti},Vector{Ti}}
@@ -26,16 +21,6 @@ end
 struct BoundaryEdges{Ti}
     edges::Vector{Vector{Ti}}
 end
-
-"""
-Fancy Edge constructor
-"""
-a → b = Edge(a, b)
-
-"""
-Store an edge uniquely
-"""
-↔(a, b) = a < b ? a → b : b → a
 
 struct FullLinearOperator{Tc,Tf,Tops,Tedg,Tcon}
     coarse::Tc

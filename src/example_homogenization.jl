@@ -301,9 +301,61 @@ function interior_subdomain(mesh, total_width, interior_width)
     return unique(nodes_in_circle), elemens_in_interior
 end
 
+"""
+Insert a value into the dictionary if the key does not exist, or remove a
+key when the key does exist.
+"""
+function insert_or_delete!(dict::Dict, key, value)
+    if haskey(dict, key)
+        delete!(dict, key)
+    else
+        dict[key] = value
+    end
+
+    dict
+end
+"""
+    get_boundary(mesh, elements) -> Dict{Edge,element_id}
+
+Given a subset of element id's, we detect the boundary by iterating of the all
+edges of each element. If an edge a → b is new, we add it to the dictionary
+edge_to_element[a → b] = element_id. If it is already stored, we delete the
+entry from the dictionary.
+"""
+function get_boundary(mesh::Mesh{Tri}, elements::Vector{Ti}) where {Ti}
+    edge_to_element = Dict{Edge{Ti},Ti}()
+
+    @inbounds for idx in elements
+        e = mesh.elements[idx]
+        insert_or_delete!(edge_to_element, e[1] ↔ e[2], idx)
+        insert_or_delete!(edge_to_element, e[1] ↔ e[3], idx)
+        insert_or_delete!(edge_to_element, e[2] ↔ e[3], idx)
+    end
+
+    edge_to_element
+end
+
+"""
+Compute the outward pointing unit normal for an edge of a triangle.
+"""
+function unit_normal(mesh::Mesh{Tri}, edge::Edge, el_idx)
+    @inbounds begin
+        e = mesh.elements[el_idx]
+        mass = (mesh.nodes[e[1]] + mesh.nodes[e[2]] + mesh.nodes[e[3]]) / 3
+        n1 = mesh.nodes[edge.to] - mesh.nodes[edge.from]
+        n1 /= norm(n1)
+        n2 = mesh.nodes[edge.to] - mass
+        n2 /= norm(n2)
+        n2 = n2 - dot(n1, n2) * n1
+        n2 /= norm(n2)
+        return n2
+    end
+end
+
 function example_interior_domain(width::Int, interior_width::Int)
     mesh, interior = rectangle(4*width, 4*width, width, width)
     nodes, elements = interior_subdomain(mesh, width, interior_width)
+    edge_to_elements = get_boundary(mesh, elements)
     M = assemble_matrix(mesh, (u, v, x) -> u.ϕ * v.ϕ, elements)
 
     vec = ones(length(mesh.nodes))
@@ -315,6 +367,11 @@ function example_interior_domain(width::Int, interior_width::Int)
 
     ys = zeros(length(mesh.elements))
     ys[elements] .= 1.0
+
+    for (edge, el_idx) in edge_to_elements
+        n = unit_normal(mesh, edge, el_idx)
+        ys[el_idx] += 2*n[1] + 4*n[2]
+    end
 
     save_to_vtk("part_of_domain", mesh, Dict("xs" => xs), Dict("ys" => ys))
 end
@@ -356,8 +413,7 @@ function ens(square_refine::Int = 6, cell_refine::Int = 2, steps::Int = 2, bound
     # Construct rhs
     b = assemble_rhs_with_gradient(mesh, load)
     
-    λ = 1.0
-    v_int = (λ .* M_int .+ A_int) \ b[interior]
+    v_int = (M_int .+ A_int) \ b[interior]
     v = zeros(length(mesh.nodes))
     v[interior] .= v_int
 
@@ -365,9 +421,9 @@ function ens(square_refine::Int = 6, cell_refine::Int = 2, steps::Int = 2, bound
 
     for i = 1 : steps
         println("Step = ", i)
-        λ /= 2
-        fill!(v, 0.0)
-        @time v_int .= (λ .* M_int .+ A_int) \ (λ .* M_int * v_int)
+        M_int .*= 0.5
+        fill!(v, 0.0) 
+        @time v_int .= (M_int .+ A_int) \ (M_int * v_int)
         v[interior] .= v_int
         push!(vs, copy(v))
     end
@@ -392,13 +448,22 @@ function ens(square_refine::Int = 6, cell_refine::Int = 2, steps::Int = 2, bound
         smaller_domain[interior_elements] .= 1.0
         push!(masked_elements, copy(smaller_domain))
 
-        area = ceil(interior_width)^2
-        @show sum(M_small)
+        area = sum(M_small)
         @show area
 
         # The first k is special: use partial integration again.
         if k == 1
-            δσ = λ * (dot(b_small, vs[k]) + dot(vs[k], M_small * vs[k])) / area
+            # compute the boundary integral.
+            boundary_integral = 0.0
+            @inbounds for (edge, el_idx) in get_boundary(mesh, interior_elements)
+                dist = norm(mesh.nodes[edge.to] - mesh.nodes[edge.from])
+                n = unit_normal(mesh, edge, el_idx)
+                boundary_integral += 0.5 * dist * (vs[k][edge.from] + vs[k][edge.to]) * (a11(el_idx) * ξ[1] * n[1] + a22(el_idx) * ξ[2] * n[2])
+            end
+
+            δσ = λ * (boundary_integral + dot(b_small, vs[k]) + dot(vs[k], M_small * vs[k])) / area
+
+            @show (λ * boundary_integral / area)
         else
             δσ = λ * (dot(vs[k - 1], M_small * vs[k]) + dot(vs[k], M_small * vs[k])) / area
         end
@@ -439,6 +504,7 @@ function theorem_one_point_two(;times = 5, ref_coarse = 6, ref_fine = 3, file = 
 
     results = zeros(times, ref_coarse)
     for i = 1 : times
+        println(i)
         results[i, :] .= ens(ref_coarse, ref_fine, steps, boundary)
         @show results[i, :]
     end
@@ -448,40 +514,6 @@ function theorem_one_point_two(;times = 5, ref_coarse = 6, ref_fine = 3, file = 
     writedlm(file, results)
     
     return nothing
-end
-
-function compare_refinements(times = 3)
-    a_1 = Vector{Float64}(times)
-    for i = 1 : times
-        a_1[i] = ens(6, 1, 3, 1.0)
-        @show a_1[i]
-    end
-    a_2 = Vector{Float64}(times)
-    for i = 1 : times
-        a_2[i] = ens(6, 2, 3, 1.0)
-        @show a_2[i]
-    end
-    a_3 = Vector{Float64}(times)
-    for i = 1 : times
-        a_3[i] = ens(6, 3, 3, 1.0)
-        @show a_3[i]
-    end
-    a_4 = Vector{Float64}(times)
-    for i = 1 : times
-        a_4[i] = ens(6, 4, 3, 1.0)
-        @show a_4[i]
-    end
-    a_5 = Vector{Float64}(times)
-    for i = 1 : times
-        a_5[i] = ens(6, 5, 3, 1.0)
-        @show a_5[i]
-    end
-
-    # [3.30416, 3.30485, 3.26204, 3.28313, 3.37068], 
-    # [3.07902, 3.05786, 3.09367, 3.10974, 3.12865], 
-    # [2.98547, 3.01343, 3.0681, 3.00767, 3.06668], 
-    # [3.01418, 2.98567, 2.97544, 2.97493, 2.98084]
-    a_1, a_2, a_3, a_4, a_5
 end
 
 function compare_boundary_layers(times = 5)
