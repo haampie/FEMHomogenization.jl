@@ -94,7 +94,7 @@ function assemble_rhs_with_gradient(m::Mesh{Te,Tv,Ti}, f; quad::Type{<:QuadRule}
             x = jac * xs[k] + shift
 
             for i = 1:dof
-                b_local[i] += ws[k] * f(basis[k][i], e_idx)
+                b_local[i] += ws[k] * f(basis[k][i], e_idx, x)
             end
         end
 

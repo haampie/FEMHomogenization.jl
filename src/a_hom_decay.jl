@@ -6,7 +6,9 @@ function checkerboard_elements(mesh::Mesh{Tri}, m::Int)
 
     as = zeros(length(mesh.elements))
 
-    for (idx, element) in enumerate(mesh.elements)
+    for idx = 1 : length(mesh.elements)
+        element = mesh.elements[idx]
+
         # Midpoint of triangle
         coord = mapreduce(i -> mesh.nodes[i], +, element) / length(element)
 
@@ -17,7 +19,10 @@ function checkerboard_elements(mesh::Mesh{Tri}, m::Int)
         as[idx] = A[y_idx, x_idx]
     end
 
-    return idx::Int -> as[idx]
+    return idx::Int -> begin
+        @inbounds val = as[idx]
+        return val
+    end
 end
 
 """
@@ -46,78 +51,20 @@ function interior_subdomain(mesh::Mesh{Tri}, total_width::Int, interior_width::I
     return unique(nodes_in_interior), elements_in_interior
 end
 
-"""
-Insert a value into the dictionary if the key does not exist, or remove a
-key when the key does exist.
-"""
-function insert_or_delete!(dict::Dict, key, value)
-    if haskey(dict, key)
-        delete!(dict, key)
-    else
-        dict[key] = value
-    end
-
-    dict
-end
-
-"""
-    get_boundary(mesh, elements) -> Dict{Edge,element_id}
-
-Given a subset of element id's, we detect the boundary by iterating of the all
-edges of each element. If an edge a → b is new, we add it to the dictionary
-edge_to_element[a → b] = element_id. If it is already stored, we delete the
-entry from the dictionary.
-"""
-function get_boundary(mesh::Mesh{Tri}, elements::Vector{Ti}) where {Ti}
-    edge_to_element = Dict{Edge{Ti},Ti}()
-
-    @inbounds for idx in elements
-        e = mesh.elements[idx]
-        insert_or_delete!(edge_to_element, e[1] ↔ e[2], idx)
-        insert_or_delete!(edge_to_element, e[1] ↔ e[3], idx)
-        insert_or_delete!(edge_to_element, e[2] ↔ e[3], idx)
-    end
-
-    edge_to_element
-end
-
-"""
-Compute the outward pointing unit normal for an edge of a triangle,
-Gram-Schmid on the vec from midpoint -> node & node -> node.
-"""
-function unit_normal(mesh::Mesh{Tri}, edge::Edge, el_idx)
-    @inbounds begin
-        e = mesh.elements[el_idx]
-        mass = (mesh.nodes[e[1]] + mesh.nodes[e[2]] + mesh.nodes[e[3]]) / 3
-        n1 = mesh.nodes[edge.to] - mesh.nodes[edge.from]
-        n1 /= norm(n1)
-        n2 = mesh.nodes[edge.to] - mass
-        n2 /= norm(n2)
-        n2 = n2 - dot(n1, n2) * n1
-        n2 /= norm(n2)
-        return n2
-    end
-end
-
-
 # Returns the integer size boundary layer
-interior_domain_width(n::Int, k::Int) = floor(Int, 2.0 ^ (n - k/2))
+@inline interior_domain_width(n::Int, k::Int) = floor(Int, 2.0 ^ (n - k/2))
 
-"""
-Compute the boundary integral for the v₀ term with a simple trapezoidal rule
-"""
-function compute_boundary_integral(mesh::Mesh{Tri}, boundary, v₀, a11, a22, ξ)
-    boundary_integral = 0.0
-    @inbounds for (edge, el_idx) in boundary
-        from = edge.from
-        to = edge.to
-        h = norm(mesh.nodes[to] - mesh.nodes[from])
-        n = unit_normal(mesh, edge, el_idx)
-        constant::Float64 = a11(el_idx) * ξ[1] * n[1] + a22(el_idx) * ξ[2] * n[2]
-        boundary_integral += (h/2) * (v₀[from] + v₀[to]) * constant
+function create_mask(r1::Float64, r2::Float64, total_width::Int)
+    width = r2 - r1
+    mid = Coord{2}(total_width / 2, total_width / 2)
+
+    # more or less a mollified indicator function
+    return x::Coord{2} -> begin
+        dist = norm(x - mid)
+        dist ≤ r1 && return 1.0
+        dist ≥ r2 && return 0.0
+        exp(1.0 - 1.0 / (1.0 - (dist - r1) / width))
     end
-
-    return boundary_integral
 end
 
 function run(n::Int, refinements::Int = 2, ξ::NTuple{2,Float64} = (1.0, 0.0), verbose::Bool = true)
@@ -131,7 +78,7 @@ function run(n::Int, refinements::Int = 2, ξ::NTuple{2,Float64} = (1.0, 0.0), v
     σ²s = Vector{Float64}(n)
 
     # Total number of `coarse cells'
-    interior_width = 2^n
+    interior_width = interior_domain_width(n, 0)
 
     # ∂ is our initial boundary layer
     ∂ = 10
@@ -167,42 +114,34 @@ function run(n::Int, refinements::Int = 2, ξ::NTuple{2,Float64} = (1.0, 0.0), v
     A_int = A[interior, interior]
 
     # First rhs via partial integration (note the minus sign)
-    load = (u, idx) -> -(a11(idx) * ξ[1] * u.∇ϕ[1] + a22(idx) * ξ[2] * u.∇ϕ[2])
+    load = (u, idx, x) -> -(a11(idx)::Float64 * ξ[1] * u.∇ϕ[1] + a22(idx)::Float64 * ξ[2] * u.∇ϕ[2])
     aξ∇v₋₁ = assemble_rhs_with_gradient(mesh, load)
 
     # Solve (μ - ∇⋅a∇)v₀ = v₋₁ ↔ ∫(μ v₀ϕ + (a∇v₀)⋅∇ϕ)dx = -∫aξ⋅∇ϕ dx ∀ϕ
     # No boundary integral here because of our artificial Dirichlet b.c.
     v = zeros(total_nodes)
     v_int = (M_int .+ A_int) \ aξ∇v₋₁[interior]
-    v[interior] .= v_int
+    v[interior] .= v_int    
 
     # Also define the previous v right now.
     v_prev = zeros(v)
-    v_prev_int = zeros(v_int)
 
     ##
     ## Compute the first term of the sum
     ##
 
     # We determine the interior subdomain
-    interior_nodes, interior_elements = interior_subdomain(mesh, total_width, interior_width)
+    interior_nodes, interior_elements = interior_subdomain_circle(mesh, total_width, interior_width)
 
     # Build the mass matrix & load by integrating just over the interior domain.
     # Compute the boundary integral for v₀
-    M_small = assemble_matrix(mesh, (u, v, x) -> u.ϕ * v.ϕ, interior_elements)
-    aξ∇v₋₁_small = assemble_rhs_with_gradient(mesh, load, interior_elements)
-    boundary_term::Float64 = compute_boundary_integral(mesh, get_boundary(mesh, interior_elements), v, a11, a22, ξ)
+    initial_mask = create_mask(interior_width / 4, interior_width / 2, total_width)
 
-    σ² = (boundary_term + dot(aξ∇v₋₁_small, v) + dot(v, M_small * v)) / interior_width^2
-
-    @show boundary_term
-
-    ###
-    # return the middle node value
-    ###
-
-    node = findfirst(x -> x[1] == total_width / 2 && x[2] == total_width / 2, mesh.nodes)
-
+    M_decay = assemble_matrix(mesh, (u, v, x) -> u.ϕ * v.ϕ * initial_mask(x)::Float64)
+    load_decay = (u, idx, x) -> -(a11(idx)::Float64 * ξ[1] * u.∇ϕ[1] + a22(idx)::Float64 * ξ[2] * u.∇ϕ[2]) * initial_mask(x)::Float64
+    aξ∇v₋₁_decay = assemble_rhs_with_gradient(mesh, load_decay)
+    @show sum(M_decay)
+    σ² = (dot(aξ∇v₋₁_decay, v) + dot(v, M_decay * v)) / sum(M_decay)
     σ²s[1] = σ²
 
     # Plot some stuff
@@ -213,6 +152,8 @@ function run(n::Int, refinements::Int = 2, ξ::NTuple{2,Float64} = (1.0, 0.0), v
         plot_elements["a₁₁"] = a11.(1 : total_elements)
         plot_elements["a₂₂"] = a22.(1 : total_elements)
         plot_nodes["aξ∇v₋₁"] = aξ∇v₋₁
+        plot_nodes["aξ∇v₋₁_decay"] = aξ∇v₋₁_decay
+        plot_nodes["mask 0"] = initial_mask.(mesh.nodes)
         plot_nodes["v0"] = copy(v)
     end
 
@@ -231,17 +172,19 @@ function run(n::Int, refinements::Int = 2, ξ::NTuple{2,Float64} = (1.0, 0.0), v
         
         # Store the previous v
         copy!(v_prev, v)
-        copy!(v_prev_int, v_int)
 
         # Compute the new v and restore the b.c.
-        copy!(v_int, (M_int + A_int) \ (M_int * v_int))
+        @time copy!(v_int, (M_int + A_int) \ (M_int * v_int))
         v[interior] .= v_int
 
         interior_width = interior_domain_width(n, k)
-        interior_nodes, interior_elements = interior_subdomain(mesh, total_width, interior_width)
+        interior_nodes, interior_elements = interior_subdomain_circle(mesh, total_width, interior_width)
 
-        M_small = assemble_matrix(mesh, (u, v, x) -> u.ϕ * v.ϕ, interior_elements)
-        σ² += λ * (dot(v_prev, M_small * v) + dot(v, M_small * v)) / interior_width^2
+        mask = create_mask(interior_width / 4, interior_width / 2, total_width)
+
+        M_decay = assemble_matrix(mesh, (u, v, x) -> u.ϕ * v.ϕ * mask(x)::Float64)
+
+        σ² += λ * (dot(v_prev, M_decay * v) + dot(v, M_decay * v)) / sum(M_decay)
 
         σ²s[k + 1] = σ²
 
@@ -251,6 +194,7 @@ function run(n::Int, refinements::Int = 2, ξ::NTuple{2,Float64} = (1.0, 0.0), v
             tmp[interior_elements] .= 1.0
             plot_elements["Interior $k"] = tmp
             plot_nodes["v$k"] = copy(v)
+            plot_nodes["mask $k"] = mask.(mesh.nodes)
         end
     end
 
@@ -262,17 +206,18 @@ function run(n::Int, refinements::Int = 2, ξ::NTuple{2,Float64} = (1.0, 0.0), v
     return σ²s
 end
 
-function repeat(times = 10, n = 6, refinements = 3, θ = 0.0)
-    srand(1)
+function repeat(;times = 10, ref_coarse = 6, ref_fine = 3, θ = 1.0, file = "/mathwork/stoppeh1/results.txt")
     xi = (cos(θ), sin(θ))
 
-    sigmas = zeros(times, n)
+    sigmas = zeros(times, ref_coarse)
 
     for i = 1 : times
-        sigmas[i, :] .= run(n, refinements, xi, false)
+        sigmas[i, :] .= run(ref_coarse, ref_fine, xi, false)
 
-        @show sigmas[i, :]
+        @show sigmas[i, :] mean(sigmas[1 : i, end])
     end
+
+    writedlm(file, sigmas)
 
     return sigmas
 end
@@ -301,11 +246,105 @@ function effects_of_h_refinement(times = 100, n = 3, refs = 1:5)
     return results
 end
 
-function analyze_conv_linf()
-    for n = 1 : 5
-        results = test_fem(n)
-        err = abs.(results[1:end-1] .- results[end])
+function test_fem(from = 4, to = 11)
+    hs = Float64[]
+    values = Float64[]
 
-        @show err[1:end-1] ./ err[2:end]
+    total_width = 2 ^ from
+
+    for m = from : to
+        srand(1)
+        mesh, interior = rectangle(2^m, 2^m, total_width, total_width)
+        @show length(mesh.nodes)
+        a11 = checkerboard_elements(mesh, total_width)
+        a22 = checkerboard_elements(mesh, total_width)
+        bf_oscillating = (u, v, idx::Int) -> a11(idx)::Float64 * u.∇ϕ[1] * v.∇ϕ[1] + a22(idx)::Float64 * u.∇ϕ[2] * v.∇ϕ[2]
+        A = assemble_matrix_elementwise(mesh, bf_oscillating)
+        b = assemble_rhs(mesh, x -> 1.0)
+        A_int = A[interior,interior]
+        b_int = b[interior]
+        x = zeros(length(mesh.nodes))
+        x[interior] .= A_int \ b_int
+
+        push!(hs, total_width / 2^m)
+        push!(values, sqrt(dot(x, A * x)))
+
+        # save_to_vtk("simple_fem_$(lpad(m, 2, 0))", mesh, Dict("x" => copy(x)), Dict("a11" => a11.(1:length(mesh.elements))))
     end
+
+    return hs, values
+end
+
+function interior_subdomain_circle(mesh::Mesh{Tri}, total_width::Int, interior_width::Int)
+    center = @SVector [total_width / 2, total_width / 2]
+    
+    elements_in_interior = find(el -> begin
+        midpoint = mapreduce(i -> mesh.nodes[i], +, el) / 3
+        norm(center - midpoint) < interior_width / 2
+    end, mesh.elements)
+
+    # Collect the nodes of these elements
+    nodes_in_interior = Vector{Int}(3 * length(elements_in_interior))
+    idx = 1
+    for el_idx in elements_in_interior
+        element = mesh.elements[el_idx]
+        nodes_in_interior[idx + 0] = element[1]
+        nodes_in_interior[idx + 1] = element[2]
+        nodes_in_interior[idx + 2] = element[3]
+        idx += 3
+    end
+
+    return unique(nodes_in_interior), elements_in_interior
+end
+
+
+
+"""
+Solve the problem
+
+  (λ + ∇⋅a∇)u = λ on Ω 
+            u = 0 on ∂Ω
+
+to inspect the boundary layer size; u ≡ 1 on the center of the domain, u = 0 on the boundary
+"""
+function show_boundary_size(;square_refine = 6, cell_refine = 2, λ = 1.0, filename = "boundary_layer")
+    width = 2^square_refine
+    mesh, graph, interior = generic_square(square_refine + cell_refine, width, width)
+
+    # Make a cut at y = width / 2
+    middle_nodes = sort!(find(node -> abs(node[2] - width/2) ≤ 10eps(), mesh.nodes), by = node -> mesh.nodes[node][1])
+    x_coords = map(idx -> mesh.nodes[idx][1], middle_nodes)
+
+    srand(1)
+    a11 = checkerboard_elements(mesh, width)
+    a22 = checkerboard_elements(mesh, width)
+
+    bf_mass = (u, v, x) -> u.ϕ * v.ϕ
+    bf_oscillating = (u, v, idx) -> a11(idx) * u.∇ϕ[1] * v.∇ϕ[1] + a22(idx) * u.∇ϕ[2] * v.∇ϕ[2]
+    
+    M = assemble_matrix(mesh, bf_mass)
+    A = assemble_matrix_elementwise(mesh, bf_oscillating)
+    b = assemble_rhs(mesh, x -> λ)
+
+    M_int = M[interior, interior]
+    A_int = A[interior, interior]
+    b_int = b[interior]
+    x = zeros(length(mesh.nodes))
+
+    x[interior] .= (λ .* M_int .+ A_int) \ b_int
+
+    x_line = x[middle_nodes]
+    inds_above = extrema(find(x -> x > 0.90, x_line))
+
+    x_above = (x_coords[inds_above[1]],x_coords[inds_above[2]])
+    @show inds_above x_above
+
+    # return x_coords, x_line, 
+
+    save_to_vtk(filename, mesh, Dict(
+        "x" => x
+    ), Dict(
+        "a11" => a11.(1 : length(mesh.elements)),
+        "a22" => a22.(1 : length(mesh.elements))
+    ))
 end

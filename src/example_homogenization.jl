@@ -537,55 +537,6 @@ function compare_boundary_layers(times = 5)
     thicknesses, results
 end
 
-"""
-Solve the problem
-
-  (λ + ∇⋅a∇)u = λ on Ω 
-            u = 0 on ∂Ω
-
-to inspect the boundary layer size; u ≡ 1 on the center of the domain, u = 0 on the boundary
-"""
-function show_boundary_size(;square_refine = 6, cell_refine = 2, λ = 1.0)
-    width = 2^square_refine
-    mesh, graph, interior = generic_square(square_refine + cell_refine, width, width)
-
-    # Make a cut at y = width / 2
-    middle_nodes = sort!(find(node -> abs(node[2] - width/2) ≤ 10eps(), mesh.nodes), by = node -> mesh.nodes[node][1])
-    x_coords = map(idx -> mesh.nodes[idx][1], middle_nodes)
-
-    a11 = checkerboard_elements(mesh, width)
-    a22 = checkerboard_elements(mesh, width)
-
-    bf_mass = (u, v, x) -> u.ϕ * v.ϕ
-    bf_oscillating = (u, v, idx) -> a11(idx) * u.∇ϕ[1] * v.∇ϕ[1] + a22(idx) * u.∇ϕ[2] * v.∇ϕ[2]
-    
-    M = assemble_matrix(mesh, bf_mass)
-    A = assemble_matrix_elementwise(mesh, bf_oscillating)
-    b = assemble_rhs(mesh, x -> λ)
-
-    M_int = M[interior, interior]
-    A_int = A[interior, interior]
-    b_int = b[interior]
-    x = zeros(length(mesh.nodes))
-
-    @time x[interior] .= (λ .* M_int .+ A_int) \ b_int
-
-    x_line = x[middle_nodes]
-    inds_above_dot98 = extrema(find(x -> x > 0.98, x_line))
-
-    x_above_dot98 = (x_coords[inds_above_dot98[1]],x_coords[inds_above_dot98[2]])
-    @show inds_above_dot98 x_above_dot98
-
-    # return x_coords, x_line, 
-
-    save_to_vtk("boundary_layer", mesh, Dict(
-        "x" => x
-    ), Dict(
-        "a11" => a11.(1 : length(mesh.elements)),
-        "a22" => a22.(1 : length(mesh.elements))
-    ))
-end
-
 # function generate_field(n, k, μ = 1.0, σ = 1.0)
 #     f(m, μ, σ) = μ .* exp.(-σ .* (linspace(-1, 1, m).^2 .+ linspace(-1, 1, m)'.^2))
 #     conv2(exp.(randn(n, n)), f(k, 0.1, 1.0))[k:end-k,k:end-k]
