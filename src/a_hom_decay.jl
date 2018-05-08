@@ -52,9 +52,9 @@ function interior_subdomain(mesh::Mesh{Tri}, total_width::Int, interior_width::I
 end
 
 # Returns the integer size boundary layer
-@inline interior_domain_width(n::Int, k::Int) = floor(Int, 2.0 ^ (n - k/2))
+@inline interior_domain_width(n::Int, k::Int) = unsafe_trunc(Int, 2.0 ^ (Float64(n) - k / 2))
 
-function create_mask(r1::Float64, r2::Float64, total_width::Int)
+@inline function create_mask(r1::Float64, r2::Float64, total_width::Int)
     width = r2 - r1
     mid = Coord{2}(total_width / 2, total_width / 2)
 
@@ -67,7 +67,7 @@ function create_mask(r1::Float64, r2::Float64, total_width::Int)
     end
 end
 
-function run(n::Int, refinements::Int = 2, ξ::NTuple{2,Float64} = (1.0, 0.0), verbose::Bool = true)
+function run(n::Int, refinements::Int = 2, ξ::NTuple{2,Float64} = (1.0, 0.0), verbose = true, ε = 0.3)
     # Some stuff we wish to plot
     if verbose
         plot_nodes = Dict{String,Vector{Float64}}()
@@ -87,7 +87,7 @@ function run(n::Int, refinements::Int = 2, ξ::NTuple{2,Float64} = (1.0, 0.0), v
     total_width = interior_width + 2∂
 
     # Our FEM mesh will be refined `refinements` times (one refinement splits a triangle into 4 triangles)
-    grid_cells = total_width * 2^refinements
+    grid_cells::Int = total_width * 2^refinements
 
     # We generate the FEM mesh up to the boundary and we get a list of interior nodes as well.
     mesh, interior = rectangle(grid_cells, grid_cells, total_width, total_width)
@@ -96,25 +96,30 @@ function run(n::Int, refinements::Int = 2, ξ::NTuple{2,Float64} = (1.0, 0.0), v
     total_nodes = length(mesh.nodes)
     total_elements = length(mesh.elements)
 
-    @show total_nodes total_elements
+    # @show total_nodes total_elements
 
     # We build the checkerboard pattern on each cell [n, n+1] x [m, m+1]
-    a11 = checkerboard_elements(mesh, total_width)
-    a22 = checkerboard_elements(mesh, total_width)
+    a11 = construct_checkerboard(total_width + 2)
+    a22 = construct_checkerboard(total_width + 2)
+    moll = Mollifier{2}(ε)
 
     # The integrand of the bilinear forms (idx is the element number)
-    bf_oscillating = (u, v, idx) -> a11(idx)::Float64 * u.∇ϕ[1] * v.∇ϕ[1] + a22(idx)::Float64 * u.∇ϕ[2] * v.∇ϕ[2]
+    bf_checkerboard = (u, v, x::Coord{2}) -> mollify(a11, x, moll) * u.∇ϕ[1] * v.∇ϕ[1] + 
+                                             mollify(a22, x, moll) * u.∇ϕ[2] * v.∇ϕ[2]
 
     # We construct the mass matrix over the whole domain [0, total_width]^2
+    verbose && println("Assembling M and A")
     M = assemble_matrix(mesh, (u, v, x) -> u.ϕ * v.ϕ)
-    A = assemble_matrix_elementwise(mesh, bf_oscillating)
+    A = assemble_matrix(mesh, bf_checkerboard)
+    verbose && println("Done")
 
     # But we need only the interior part cause of the Dirichlet b.c.
     M_int = M[interior, interior]
     A_int = A[interior, interior]
 
     # First rhs via partial integration (note the minus sign)
-    load = (u, idx, x) -> -(a11(idx)::Float64 * ξ[1] * u.∇ϕ[1] + a22(idx)::Float64 * ξ[2] * u.∇ϕ[2])
+    load = (u, idx, x::Coord{2}) -> -(mollify(a11, x, moll) * ξ[1] * u.∇ϕ[1] + 
+                                      mollify(a22, x, moll) * ξ[2] * u.∇ϕ[2])
     aξ∇v₋₁ = assemble_rhs_with_gradient(mesh, load)
 
     # Solve (μ - ∇⋅a∇)v₀ = v₋₁ ↔ ∫(μ v₀ϕ + (a∇v₀)⋅∇ϕ)dx = -∫aξ⋅∇ϕ dx ∀ϕ
@@ -130,27 +135,29 @@ function run(n::Int, refinements::Int = 2, ξ::NTuple{2,Float64} = (1.0, 0.0), v
     ## Compute the first term of the sum
     ##
 
-    # We determine the interior subdomain
-    interior_nodes, interior_elements = interior_subdomain_circle(mesh, total_width, interior_width)
-
     # Build the mass matrix & load by integrating just over the interior domain.
     # Compute the boundary integral for v₀
     initial_mask = create_mask(interior_width / 4, interior_width / 2, total_width)
-
     M_decay = assemble_matrix(mesh, (u, v, x) -> u.ϕ * v.ϕ * initial_mask(x)::Float64)
-    load_decay = (u, idx, x) -> -(a11(idx)::Float64 * ξ[1] * u.∇ϕ[1] + a22(idx)::Float64 * ξ[2] * u.∇ϕ[2]) * initial_mask(x)::Float64
+    load_decay = (u, idx, x) -> -(mollify(a11, x, moll) * ξ[1] * u.∇ϕ[1] + mollify(a22, x, moll) * ξ[2] * u.∇ϕ[2]) * initial_mask(x)::Float64
     aξ∇v₋₁_decay = assemble_rhs_with_gradient(mesh, load_decay)
-    @show sum(M_decay)
+    # @show sum(M_decay)
     σ² = (dot(aξ∇v₋₁_decay, v) + dot(v, M_decay * v)) / sum(M_decay)
     σ²s[1] = σ²
 
     # Plot some stuff
     if verbose
+        interior_nodes, interior_elements = interior_subdomain_circle(mesh, total_width, interior_width)
+        midpoints = map(mesh.elements) do idxs
+            mean(mesh.nodes[idx] for idx in idxs)
+        end
         tmp = zeros(total_elements)
         tmp[interior_elements] .= 1.0
         plot_elements["Interior 0"] = tmp
-        plot_elements["a₁₁"] = a11.(1 : total_elements)
-        plot_elements["a₂₂"] = a22.(1 : total_elements)
+        plot_elements["a₁₁"] = a11.(midpoints)
+        plot_elements["a₂₂"] = a22.(midpoints)
+        plot_nodes["a₁₁ mollified"] = mollify.(a11, mesh.nodes, moll)
+        plot_nodes["a₂₂ mollified"] = mollify.(a22, mesh.nodes, moll)
         plot_nodes["aξ∇v₋₁"] = aξ∇v₋₁
         plot_nodes["aξ∇v₋₁_decay"] = aξ∇v₋₁_decay
         plot_nodes["mask 0"] = initial_mask.(mesh.nodes)
@@ -178,23 +185,25 @@ function run(n::Int, refinements::Int = 2, ξ::NTuple{2,Float64} = (1.0, 0.0), v
         v[interior] .= v_int
 
         interior_width = interior_domain_width(n, k)
-        interior_nodes, interior_elements = interior_subdomain_circle(mesh, total_width, interior_width)
 
-        mask = create_mask(interior_width / 4, interior_width / 2, total_width)
+        let mask = create_mask(interior_width / 4, interior_width / 2, total_width)
+            M_decay = assemble_matrix(mesh, (u, v, x::Coord{2}) -> u.ϕ * v.ϕ * mask(x)::Float64)
+            σ² += λ * (dot(v_prev, M_decay * v) + dot(v, M_decay * v)) / sum(M_decay)
 
-        M_decay = assemble_matrix(mesh, (u, v, x) -> u.ϕ * v.ϕ * mask(x)::Float64)
-
-        σ² += λ * (dot(v_prev, M_decay * v) + dot(v, M_decay * v)) / sum(M_decay)
+            if verbose 
+                plot_nodes["mask $k"] = mask.(mesh.nodes)
+            end
+        end
 
         σ²s[k + 1] = σ²
 
         # Plot some things
         if verbose
+            interior_nodes, interior_elements = interior_subdomain_circle(mesh, total_width, interior_width)
             tmp = zeros(total_elements)
             tmp[interior_elements] .= 1.0
             plot_elements["Interior $k"] = tmp
             plot_nodes["v$k"] = copy(v)
-            plot_nodes["mask $k"] = mask.(mesh.nodes)
         end
     end
 
@@ -206,13 +215,13 @@ function run(n::Int, refinements::Int = 2, ξ::NTuple{2,Float64} = (1.0, 0.0), v
     return σ²s
 end
 
-function repeat(;times = 10, ref_coarse = 6, ref_fine = 3, θ = 1.0, file = "/mathwork/stoppeh1/results.txt")
+function repeat(;times = 10, ref_coarse = 6, ref_fine = 3, θ = 1.0, file = "/mathwork/stoppeh1/results.txt", ε = 0.21)
     xi = (cos(θ), sin(θ))
 
     sigmas = zeros(times, ref_coarse)
 
     for i = 1 : times
-        sigmas[i, :] .= run(ref_coarse, ref_fine, xi, false)
+        sigmas[i, :] .= run(ref_coarse, ref_fine, xi, false, ε)
 
         @show sigmas[i, :] mean(sigmas[1 : i, end])
     end
