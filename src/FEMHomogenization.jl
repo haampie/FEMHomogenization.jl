@@ -14,6 +14,7 @@ include("meshing.jl")
 include("assembly.jl")
 include("assembly_elementwise.jl")
 include("refinement.jl")
+include("generate_grid.jl")
 
 include("tet/elements.jl")
 include("tet/quadrature.jl")
