@@ -46,21 +46,21 @@ function integrate_mollifier_1d(fences = 10, rule::Type = Val{4})
     return 2*integrate_fenced(x -> mollifier_value(Coord{1}(x)), 0.0, 1.0, qxs, qws, fences)
 end
 
-function mollify_something(x, rule::Type = Val{4}, ε = 1/2, fences = 4)
-    # Compute ∫ϕdx to high accuracy.
-    qws = gauss_legendre_weights(rule)
-    qxs = gauss_legendre_coords(rule)
-    I = integrate_mollifier_1d()
-    from, to = x - ε, x + ε
-    f(y) = a(y) * mollifier_value(Coord{1}((y - x) / ε)) / ε
+# function mollify_something(x, rule::Type = Val{4}, ε = 1/2, fences = 4)
+#     # Compute ∫ϕdx to high accuracy.
+#     qws = gauss_legendre_weights(rule)
+#     qxs = gauss_legendre_coords(rule)
+#     I = integrate_mollifier_1d()
+#     from, to = x - ε, x + ε
+#     f(y) = a(y) * mollifier_value(Coord{1}((y - x) / ε)) / ε
 
-    nodes = linspace(from, to, fences + 1)
-    for i = 1 : fences
-        integrate_fenced(f, from, 1.0, qxs, qws, div(fences, 2)) + 
-        integrate_fenced(f, 1.0, to, qxs, qws, div(fences, 2))
-    else
-        integrate_fenced(f, from, to, qxs, qws, fences)
-    end
+#     nodes = linspace(from, to, fences + 1)
+#     for i = 1 : fences
+#         integrate_fenced(f, from, 1.0, qxs, qws, div(fences, 2)) + 
+#         integrate_fenced(f, 1.0, to, qxs, qws, div(fences, 2))
+#     else
+#         integrate_fenced(f, from, to, qxs, qws, fences)
+#     end
 
-    return value / I
-end
+#     return value / I
+# end

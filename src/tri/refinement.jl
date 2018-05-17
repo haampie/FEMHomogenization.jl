@@ -34,8 +34,8 @@ function refine(mesh::Mesh{Tri,Tv,Ti}, graph::Graph{Ti}) where {Tv,Ti}
         # Split the triangle in 4 pieces
         idx = 4i - 3
         triangles[idx + 0] = SVector(t[1], a, c)
-        triangles[idx + 1] = SVector(t[2], a, b)
-        triangles[idx + 2] = SVector(t[3], b, c)
+        triangles[idx + 1] = SVector(t[2], b, a)
+        triangles[idx + 2] = SVector(t[3], c, b)
         triangles[idx + 3] = SVector(a   , b, c)
     end
 

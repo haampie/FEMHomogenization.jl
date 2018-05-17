@@ -175,11 +175,13 @@ function combine_edges!(y, edge_to_elements, coarse_elements, edge_indices)
         # Assume the edge is in the direction a → a+1
         fst_local_edge, fst_dir = edge_number_and_orientation(coarse_elements[e1], edge)
         snd_local_edge, snd_dir = edge_number_and_orientation(coarse_elements[e2], edge)
+
         fst_edge = edge_indices.edges[fst_local_edge]
         snd_edge = edge_indices.edges[snd_local_edge]
         
+        # We assume the same orientation of triangles
         range_one = 1 : length(fst_edge)
-        range_two = fst_dir == snd_dir ? StepRange(range_one) : reverse(range_one)
+        range_two = reverse(range_one)
 
         for i = range_one
             idx_one = fst_edge[i]
@@ -346,22 +348,9 @@ end
 
 function example_one(fine_ref = 6, coarse_ref = 6)
     nodes = SVector{2,Float64}[(0, 0), (1, 3), (2, 1), (3, 3), (4, 1)]
-    elements = SVector{3,Int64}[(1, 2, 3), (2, 3, 4), (3, 4, 5)]
+    elements = SVector{3,Int64}[(1, 3, 2), (2, 3, 4), (3, 5, 4)]
     coarse = refine(Mesh(Tri, nodes, elements), coarse_ref)
-    local_multigrid(coarse, fine_ref)
-end
-
-function example_two(fine_ref = 6, coarse_ref = 6)
-    nodes = SVector{2,Float64}[(0, 0), (1, 3), (3, 3), (2, 1), (4, 1)]
-    elements = SVector{3,Int64}[(1, 2, 4), (2, 3, 4), (3, 4, 5)]
-    coarse = refine(Mesh(Tri, nodes, elements), coarse_ref)
-    local_multigrid(coarse, fine_ref)
-end
-
-function example_three(fine_ref = 6, coarse_ref = 6)
-    nodes = SVector{2,Float64}[(0, 0), (1, 3), (2, 1), (3, 3), (4, 1)]
-    elements = SVector{3,Int64}[(1, 3, 2), (2, 4, 3), (3, 5, 4)]
-    coarse = refine(Mesh(Tri, nodes, elements), coarse_ref)
+    validate_orientation(coarse)
     local_multigrid(coarse, fine_ref)
 end
 
