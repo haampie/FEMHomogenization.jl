@@ -45,4 +45,5 @@ include("test_quad_mollifier_discontinuous.jl")
 # include("matrix_free/constant_coefficients.jl")
 
 include("permutations/permutations.jl")
+include("refined_reference_tet.jl")
 end

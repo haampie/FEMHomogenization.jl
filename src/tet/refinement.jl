@@ -43,7 +43,7 @@ function refine(mesh::Mesh{Tet,Tv,UInt32}, graph::Graph) where {Tv}
 
         # Generate new tets!
         for (a,b,c,d) in ((1,5,6,7), (5,2,8,9), (6,8,3,10), (7,9,10,4), 
-                          (5,6,7,9), (5,6,8,9), (6,7,9,10), (6,8,9,10))
+                          (5,6,7,9), (5,6,9,8), (6,7,9,10), (6,8,10,9))
             tets[tet_idx] = (parts[a], parts[b], parts[c], parts[d])
             tet_idx += 1
         end
